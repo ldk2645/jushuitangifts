@@ -1,0 +1,33 @@
+.venv/
+.tmp/
+data/
+logs/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+config/accounts.local.json
+config/accounts.local.json.tmp
+
+# Local credentials, encrypted snapshots and development output.
+config/accounts*.local.json*
+*.dpapi
+*.log
+.env
+.env.*
+!.env.example
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Unrelated desktop documents and screenshots stay on this computer.
+/*.png
+/*.xlsx
+
+# Internal development history contains real business identifiers.
+# Publish only the maintained usage, workflow and release documents.
+/docs/*
+!/docs/business-workflow.md
+!/docs/automatic-login.md
+!/docs/releases/

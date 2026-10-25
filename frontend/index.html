@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <meta name="description" content="礼赠登记工作台：以表格整理订单、礼品与收件信息。">
+  <title>礼赠登记 · 工作台</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand"><img src="/favicon.svg" width="30" height="30" alt=""><span>礼赠工作台</span><span class="brand-divider"></span><span class="header-caption">让每一份心意，准确送达</span></div>
+    <button id="login-button" class="login-button" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8 4H4v12h4m4-10 4 4-4 4m-5-4h9"/></svg>平台登录</button>
+  </header>
+  <main class="workspace">
+    <section class="page-heading" aria-labelledby="page-title">
+      <div><div class="eyebrow">GIFT REGISTRATION</div><h1 id="page-title">礼赠登记表</h1><p>录入订单并选择礼品，点击圆点可修改收件信息。</p></div>
+      <div class="heading-right"><div class="overview-metrics" aria-label="登记概况"><div><span>待登记</span><strong id="metric-ready">0</strong></div><div class="metric-success"><span>成功</span><strong id="metric-success">0</strong></div><div class="metric-failed"><span>失败</span><strong id="metric-failed">0</strong></div></div><div id="save-indicator" class="save-indicator" role="status"><span class="save-dot"></span><span id="save-label">正在载入…</span></div></div>
+    </section>
+    <div class="workflow-overview" aria-label="登记流程"><div><span class="step-number">01</span><span>聚水潭查询</span></div><span class="step-arrow">›</span><div><span class="step-number">02</span><span>班牛登记</span></div><span class="step-arrow">›</span><div><span class="step-number">03</span><span>聚水潭复查</span></div><span class="step-arrow">›</span><div><span class="step-number">04</span><span>返回结果</span></div><span class="retry-policy">失败不自动重试</span></div>
+    <section class="sheet" aria-label="礼赠登记表格">
+      <div class="toolbar" role="toolbar" aria-label="表格操作">
+        <div class="toolbar-actions">
+          <div class="add-row-group"><label class="add-count-label" for="add-count">新增</label><input id="add-count" class="add-count" type="number" min="1" max="10000" value="10" aria-label="新增行数"><span class="add-unit">行</span><button id="add-row" class="button primary" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>添加</button></div>
+          <button id="delete-row" class="button" type="button" disabled><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M8 3h4l1 3m-7 0 1 11h6l1-11M9 9v5m3-5v5"/></svg>删除行</button>
+          <span class="toolbar-divider"></span>
+          <button id="undo" class="icon-button" type="button" title="撤销（Ctrl+Z）" aria-label="撤销" disabled><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 5 3 9l4 4M3 9h9a5 5 0 0 1 0 10"/></svg></button>
+          <button id="copy-range" class="button" type="button" title="复制选中区域（Ctrl+C）"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 7h10v10H7zM13 7V3H3v10h4"/></svg>复制区域</button>
+          <button id="paste" class="button" type="button" title="从选区左上角粘贴（Ctrl+V）"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 4H4v13h12V4h-3M7 3h6v4H7zM7 11h6m-6 3h4"/></svg>粘贴区域</button>
+          <button id="add-gift" class="button" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 8h14v4H3zM5 12v5h10v-5M10 8v9M10 8C3 8 6 1 10 8Zm0 0c7 0 4-7 0 0Z"/></svg>新增礼赠</button>
+          <button id="auto-fit-columns" class="button" type="button" title="按内容适配全部列，并清除手动列宽"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 3v14M17 3v14M4 10h12M7 7l-3 3 3 3m6-6 3 3-3 3"/></svg>自动列宽</button>
+        </div>
+        <div class="toolbar-right"><button id="save" class="button save-button" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 3h10l3 3v11H3V3zM7 3v5h6V3M7 17v-5h6v5"/></svg>保存</button><button id="start-registration" class="button primary start-button" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 9 6-9 6z"/></svg><span class="start-word">star</span><span>开始登记</span></button></div>
+      </div>
+      <div class="formula-bar"><span id="cell-reference" class="cell-reference">A2</span><span class="formula-symbol">fx</span><input id="formula-input" type="text" autocomplete="off" aria-label="当前单元格内容" placeholder="选中单元格，即可在此查看或编辑内容" disabled></div>
+      <div id="grid-scroll" class="grid-scroll" tabindex="-1">
+        <table id="registry-grid" role="grid" aria-multiselectable="true" aria-label="礼赠登记数据，可拖选区域并复制粘贴" aria-describedby="grid-help"><colgroup id="grid-columns"></colgroup><thead id="grid-head"></thead><tbody id="grid-body"></tbody></table>
+        <div id="load-error" class="load-error" hidden><strong>表格暂时无法载入</strong><p>请确认工作台已启动，然后刷新页面重试。</p><button id="reload" class="button" type="button">重新载入</button></div>
+      </div>
+      <div class="sheet-bottom"><button id="add-bottom" class="add-bottom" type="button"><span>＋</span> 添加一行</button><span id="grid-help">拖选 / Shift 扩选 · Ctrl+C 复制 · Ctrl+V 粘贴 · Delete 清空 · 双击 / F2 编辑</span></div>
+    </section>
+    <footer class="workspace-footer"><div class="sheet-tab"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 3h14v14H3zM3 8h14M8 3v14"/></svg>礼赠登记</div><div class="sheet-summary"><span id="row-summary">共 0 行</span><span class="summary-divider"></span><span id="ready-summary">待登记 0 条</span><span id="selection-summary" class="selection-summary">未选中单元格</span></div></footer>
+  </main>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <section id="gift-picker" class="gift-picker" role="dialog" aria-label="选择礼品（可多选）" hidden><div class="picker-heading"><strong>选择礼品</strong><span>可多选</span><button id="gift-close" type="button" aria-label="关闭礼品选项">×</button></div><input id="gift-search" type="search" placeholder="搜索名称、编码或别名" autocomplete="off" aria-label="搜索礼品"><div id="gift-unmatched" class="gift-unmatched" hidden></div><div id="gift-options" class="gift-options"></div><div class="picker-footer"><span id="gift-count">已选 0 项</span><button id="gift-add-option" type="button">＋ 新增礼赠</button><button id="gift-clear" type="button">清空</button><button id="gift-done" type="button">完成</button></div></section>
+  <dialog id="gift-create-dialog" class="gift-create-dialog" aria-labelledby="gift-create-title" aria-describedby="gift-create-description">
+    <form id="gift-create-form">
+      <div class="gift-create-heading"><div class="gift-create-icon" aria-hidden="true">＋</div><div><h2 id="gift-create-title">新增礼赠</h2><p id="gift-create-description">加入礼赠清单，后续可直接搜索、多选或粘贴匹配。</p></div></div>
+      <label class="gift-create-field" for="gift-create-code"><span>商品编码 <em>必填</em></span><input id="gift-create-code" name="code" type="text" required maxlength="80" autocomplete="off" spellcheck="false" placeholder="填写聚水潭中的真实商品编码"><small>登记和复查时使用此编码定位商品。</small></label>
+      <label class="gift-create-field" for="gift-create-name"><span>礼赠名称 <em>必填</em></span><input id="gift-create-name" name="name" type="text" required maxlength="200" autocomplete="off" placeholder="填写完整名称，建议包含型号或颜色"></label>
+      <label class="gift-create-field" for="gift-create-aliases"><span>常用别名 <em class="optional">选填</em></span><textarea id="gift-create-aliases" name="aliases" rows="2" maxlength="3000" placeholder="多个别名用逗号、顿号或换行分隔"></textarea><small>复制这些简称时，也能匹配到此礼赠。</small></label>
+      <label id="gift-create-select-wrap" class="gift-create-select" hidden><input id="gift-create-select" type="checkbox" checked>保存后选中到当前订单</label>
+      <p id="gift-create-error" class="gift-create-error" role="alert" hidden></p>
+      <div class="gift-create-actions"><button id="gift-create-cancel" class="button" type="button">取消</button><button id="gift-create-submit" class="button primary" type="submit">保存礼赠</button></div>
+    </form>
+  </dialog>
+</body>
+</html>
