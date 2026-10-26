@@ -5,6 +5,8 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from datetime import datetime, timezone
+from unittest.mock import patch
 
 from fakes import FakeOperations
 from gift_registry.registration import RegistrationQueue, business_key, load_gifts, row_signature
@@ -28,6 +30,28 @@ def snapshots(row=None):
 
 
 class ManualCompletionTests(unittest.TestCase):
+    def test_equal_wall_clock_values_keep_explicit_start_order(self):
+        operations = FakeOperations()
+        operations.configured = False
+        row = {**sample('same-clock-row'), 'change_address': False}
+        later = {**row, 'order_no': '00010'}
+        before, after, receipt = snapshots(row)
+        with patch('gift_registry.registration.datetime', wraps=datetime) as clock, \
+                patch('gift_registry.registration._last_now', None):
+            clock.now.return_value = datetime(2026, 1, 1, tzinfo=timezone.utc)
+            with RegistrationQueue(self.folder(), operations=operations) as jobs:
+                jobs.record_external_submission({**row, 'id': 'same-clock-evidence'}, load_gifts(), before, after, receipt)
+                jobs.start([row], load_gifts())
+                first = jobs.states()[row['id']]['updated_at']
+                jobs.start([later], load_gifts())
+                self.assertEqual(jobs.states()[row['id']]['signature'], row_signature(later))
+                second = jobs.states()[row['id']]['updated_at']
+                self.assertGreater(datetime.fromisoformat(second), datetime.fromisoformat(first))
+                jobs.start([row], load_gifts())
+                self.assertEqual(jobs.states()[row['id']]['signature'], row_signature(row))
+                self.assertIsNone(jobs.worker)
+                self.assertEqual(operations.trace, [])
+
     def folder(self):
         folder = tempfile.TemporaryDirectory(dir=Path(__file__).parent)
         self.addCleanup(folder.cleanup)

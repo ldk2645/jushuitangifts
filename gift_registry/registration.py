@@ -6,7 +6,7 @@ import os
 import queue
 import threading
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .config import ROOT
@@ -49,8 +49,19 @@ class _QueueDirectoryLock:
         self.stream.close()
 
 
+_time_lock = threading.Lock()
+_last_now = None
+
+
 def now():
-    return datetime.now().astimezone().isoformat()
+    # Windows 快速连续操作可能得到相同墙钟值；确保本进程写入顺序可区分。
+    global _last_now
+    with _time_lock:
+        current = datetime.now().astimezone()
+        if _last_now is not None and current <= _last_now:
+            current = _last_now + timedelta(microseconds=1)
+        _last_now = current
+        return current.isoformat()
 
 
 def _item_updated_time(item, job):
