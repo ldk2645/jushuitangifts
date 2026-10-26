@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from selenium.common.exceptions import StaleElementReferenceException
+from selenium.common.exceptions import StaleElementReferenceException, InvalidSessionIdException
 
 from gift_registry.authentication import AuthenticationRequired, ENTRY_URLS, SessionAuthenticator
 from gift_registry.config import SITES
@@ -177,6 +177,15 @@ class FakeDriver:
 
 
 class AuthenticationTests(unittest.TestCase):
+    def test_closed_session_is_not_reported_as_password_login_failure(self):
+        auth, driver, store, _ = self.make()
+        with patch.object(auth, '_url', side_effect=InvalidSessionIdException('private')):
+            with self.assertRaisesRegex(AuthenticationRequired, '浏览器窗口已关闭或会话已失效') as error:
+                auth.ensure_authenticated(driver)
+        self.assertNotIn('private', str(error.exception))
+        self.assertEqual(store.calls, [])
+        self.assertEqual(driver.button.clicks, 0)
+
     def make(self, key="banniu", mode="login", *, credentials=None):
         driver = FakeDriver(key, mode)
         store = credentials if credentials is not None else FakeCredentials()

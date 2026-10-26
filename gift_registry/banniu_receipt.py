@@ -9,12 +9,16 @@ from selenium.common.exceptions import WebDriverException
 from .workflow import PlatformOperationError, SubmissionReceipt
 
 
+class TaskListNotReadyError(PlatformOperationError):
+    """只读筛选未取得完整新结果，可有界刷新列表；不适用于登记动作。"""
+
+
 _LIST = """
 // gift-banniu-list: rendered table only, including offscreen virtual columns.
-const visible=e=>e.getClientRects().length && getComputedStyle(e).visibility!=='hidden';
+const visible=e=>e.getClientRects().length && getComputedStyle(e).visibility!=='hidden' && Number(getComputedStyle(e).opacity)>0;
 const tables=[...document.querySelectorAll('.vxe-table')].filter(visible);
 const pagers=[...document.querySelectorAll('.el-pagination__total')].filter(visible);
-if(tables.length!==1 || [...document.querySelectorAll('.el-loading-mask')].some(visible)) return null;
+if(tables.length!==1 || [...document.querySelectorAll('.el-loading-mask,.task-details,.worksheet-main-details-back,.w-edit-task-dialog')].some(visible)) return null;
 const table=tables[0];
 // 真实空结果会隐藏分页，只在表格明确显示空态且没有任务行时认定为零条。
 if(pagers.length===0 && table.classList.contains('is--empty') &&
@@ -127,10 +131,11 @@ def receipt_from_detail(snapshot, request, before, task_id, *, not_before=None):
     if not_before is not None and created < not_before.replace(microsecond=0):
         raise PlatformOperationError("班牛回执属于本次提交前的旧任务；禁止再次提交")
     state = fields.get("同步状态", "")
-    if state and state != "成功":
+    if state == "失败":
         raise PlatformOperationError("班牛任务同步未成功，请人工核查；禁止再次提交")
     identifier = fields.get("售后单内部单号", "")
-    if not state or not identifier:
+    # 异步同步尚未成功时继续有界只读核对；未知状态也绝不当作成功。
+    if state != "成功" or not identifier:
         return None
     if not identifier.isdecimal() or identifier in {record.record_id for record in before.records}:
         raise PlatformOperationError("班牛回传的聚水潭单号无效或提交前已存在；禁止再次提交")
@@ -180,25 +185,35 @@ class BanniuReceiptReader:
         return field
 
     def query_tasks(self, order_no):
+        refresh = False
         for attempt in range(2):
             try:
-                return self._query_tasks_once(order_no)
+                return self._query_tasks_once(order_no, refresh=True) if refresh else self._query_tasks_once(order_no)
+            except TaskListNotReadyError:
+                if attempt:
+                    raise
+                refresh = True
             except (PlatformOperationError, WebDriverException):
                 if attempt or self.authenticate is None or not self.authenticate():
                     raise
 
-    def _query_tasks_once(self, order_no):
-        from .banniu_page import BANNIU_REGISTRATION_URL
+    def _query_tasks_once(self, order_no, *, refresh=False):
+        from .banniu_page import BANNIU_REGISTRATION_URL, _REGISTRATION_LIST_READY, _open_registration_list
+        self.driver.switch_to.default_content()
         if self.page._visible(self.driver, '.w-edit-task-dialog'):
             raise PlatformOperationError("班牛已有未关闭的任务表单，不能切换回执查询")
-        self.driver.get(BANNIU_REGISTRATION_URL)
+        if refresh and self.driver.current_url == BANNIU_REGISTRATION_URL:
+            self.driver.refresh()  # 只读筛选未刷新时最多一次；上方已拒绝未关闭表单。
+        else:
+            _open_registration_list(self.driver)
         if self.authenticate is not None:
             self.authenticate(target_url=BANNIU_REGISTRATION_URL)
         self.page._one('div.title.el-dropdown-selfdefine', text='聚水潭赠品补发-融合')
         # 页面标题先于列表及保存的筛选展开状态出现；等列表加载完成后再决定是否展开。
-        self.page._wait(lambda _: self.driver.execute_script(_LIST) is not None
+        self.page._wait(lambda _: self.driver.execute_script(_REGISTRATION_LIST_READY) is True
+                        and self.driver.execute_script(_LIST) is not None
                         and not self.page._visible(self.driver, '.el-loading-mask'),
-                        "班牛任务列表尚未加载完成")
+                        "班牛任务列表尚未加载完成或仍被详情遮罩覆盖；未进行筛选或登记")
         if not self.page._visible(self.driver, '.advancedFilter'):
             toggle = self.page._one('button.worksheet-main-content-bar-item-set', text='筛选')
             if 'open-style' not in (toggle.get_attribute('class') or '').split():
@@ -217,23 +232,31 @@ class BanniuReceiptReader:
                     return False
                 rows = complete_task_rows(self.driver.execute_script(_LIST), order_no)
                 return {"rows": rows} if rows is not None else False
-            return self.page._wait(ready, "班牛回执列表未完整刷新或结果超过一页；未重复提交")["rows"]
+            try:
+                return self.page._wait(ready, "班牛回执列表未完整刷新或结果超过一页；未重复提交")["rows"]
+            except PlatformOperationError as exc:
+                # 解析冲突等确定异常不得转成可重查的刷新超时。
+                if str(exc) != "班牛回执列表未完整刷新或结果超过一页；未重复提交":
+                    raise
+                raise TaskListNotReadyError(str(exc)) from None
         finally:
             self.driver.execute_script(_STOP)
 
     def open_task(self, order_no, task_id):
         if not isinstance(task_id, str) or not task_id.isdecimal():
             raise PlatformOperationError("班牛任务编号无效")
-        self.page._one(f'.vxe-table--body tr[rowid="{task_id}"] .worksheetColumn-hover', text=order_no).click()
+        element = self.page._one(f'.vxe-table--body tr[rowid="{task_id}"] .worksheetColumn-hover', text=order_no)
+        self.page._click_once(element)
         self.page._one('.task-details')
 
     def read_detail(self, request, before, task_id, *, not_before=None):
         snapshot = self.page._wait(lambda _: self.driver.execute_script(_DETAIL), "班牛任务详情尚未完整显示")
         return receipt_from_detail(snapshot, request, before, task_id, not_before=not_before)
 
-    def wait_for_receipt(self, request, before, previous_ids, submitted_at, *, queries=4, interval=2):
-        if not 1 <= queries <= 4 or not 0 <= interval <= 5:
+    def wait_for_receipt(self, request, before, previous_ids, submitted_at, *, queries=8, interval=3):
+        if not 1 <= queries <= 8 or not 0 <= interval <= 5:
             raise ValueError("班牛回执只读查询次数或间隔超出上限")
+        candidate_id = None
         for attempt in range(queries):
             try:
                 rows = self.query_tasks(request.order_no)
@@ -242,6 +265,9 @@ class BanniuReceiptReader:
                     raise PlatformOperationError("班牛出现多个新增任务，无法唯一确认本次回执；禁止再次提交")
                 if added:
                     task_id = added[0]['task_id']
+                    if candidate_id is not None and candidate_id != task_id:
+                        raise PlatformOperationError("班牛待核验的新增任务发生变化；禁止再次提交")
+                    candidate_id = task_id
                     self.open_task(request.order_no, task_id)
                     receipt = self.read_detail(request, before, task_id, not_before=submitted_at)
                     if receipt is not None:
@@ -253,4 +279,4 @@ class BanniuReceiptReader:
                     raise
             if attempt + 1 < queries:
                 time.sleep(interval)
-        raise PlatformOperationError("班牛提交后未取得明确回执，请人工核查；禁止再次提交")
+        raise PlatformOperationError("班牛提交后未取得明确回执或同步仍未成功，请人工核查；禁止再次提交")

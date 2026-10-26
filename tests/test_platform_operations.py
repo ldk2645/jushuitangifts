@@ -6,6 +6,25 @@ from gift_registry.workflow import GiftRecord, OrderSnapshot, PlatformOperationE
 
 
 class PlatformOperationsTests(unittest.TestCase):
+    def test_replacement_driver_rebuilds_adapter_without_replaying_submit(self):
+        from types import SimpleNamespace
+        browsers = Mock()
+        first, second = object(), object()
+        browsers.driver.side_effect = [first, first, second]
+        pages = []
+        def factory(driver):
+            page = SimpleNamespace(driver=driver, submit=Mock())
+            pages.append(page)
+            return page
+        operations = SeleniumOperations(browsers=browsers, form_factory=factory)
+        original = operations._banniu()
+        self.assertIs(operations._banniu(), original)
+        replacement = operations._banniu()
+        self.assertIsNot(original, replacement)
+        self.assertEqual(len(pages), 2)
+        for page in pages:
+            page.submit.assert_not_called()
+
     def setUp(self):
         self.recipient = Recipient("测试姓名", "001234567890", "测试地址")
         self.request = RegistrationRequest("00001", ("SKU-A",), ("测试礼品",))
@@ -51,7 +70,7 @@ class PlatformOperationsTests(unittest.TestCase):
     def test_prepare_does_not_submit_and_reuses_browser(self):
         self.operations.prepare_registration(self.request, self.before)
         self.operations.prepare_registration(self.request, self.before)
-        self.assertEqual(self.browsers.driver.call_count, 1)
+        self.assertEqual(self.browsers.driver.call_count, 2)
         self.assertEqual(self.form.prepare.call_count, 2)
         self.form.submit.assert_not_called()
 

@@ -5,7 +5,8 @@ import re
 import time
 from urllib.parse import urlsplit
 
-from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException
+from selenium.common.exceptions import (NoSuchElementException, StaleElementReferenceException,
+                                        InvalidSessionIdException, NoSuchWindowException)
 from selenium.webdriver.common.by import By
 
 from .credentials import CredentialStore
@@ -344,6 +345,9 @@ class SessionAuthenticator:
         except AuthenticationRequired as exc:
             self._blocked = str(exc)
             raise
+        except (InvalidSessionIdException, NoSuchWindowException):
+            self._blocked = self._message("浏览器窗口已关闭或会话已失效，本次操作已停止；未重复登录或登记")
+            raise AuthenticationRequired(self._blocked) from None
         except Exception:
             self._blocked = self._message("自动登录未完成，请在当前平台窗口手动处理，未自动重复登录")
             raise AuthenticationRequired(self._blocked) from None

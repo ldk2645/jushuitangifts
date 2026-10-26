@@ -5,10 +5,12 @@ from pathlib import Path
 from threading import RLock
 
 from selenium.webdriver.remote.webdriver import WebDriver
+from selenium.common.exceptions import InvalidSessionIdException, NoSuchWindowException
 
 from .browser import SiteBrowser
 from .config import DATA_DIR, SITES
 from .sessions import SessionStore
+from .driver_shutdown import configure_transport
 from .workflow import PlatformOperationError
 
 
@@ -121,7 +123,14 @@ class BusinessBrowsers:
             if site_key not in self.sites:
                 raise PlatformOperationError("业务浏览器站点未配置")
             if site_key in self.browsers:
-                return self.browsers[site_key]
+                browser = self.browsers[site_key]
+                if not self._session_closed(browser):
+                    return browser
+                # 只在获取下一次业务页面时重建；绝不在提交点击或回执读取中重放动作。
+                if not self._close_browser(browser):
+                    self._pending_cleanup[site_key] = self.browsers.pop(site_key)
+                    raise PlatformOperationError("已失效的平台浏览器清理未完成，请关闭本工具后重新启动；未重新登记")
+                del self.browsers[site_key]
             self._acquire_profiles()
 
             browser = None
@@ -144,6 +153,25 @@ class BusinessBrowsers:
 
     def driver(self, site_key):
         return self.get(site_key).driver
+
+    @staticmethod
+    def _session_closed(browser):
+        driver = browser.driver
+        if driver is None:
+            return True
+        if not isinstance(driver, WebDriver):
+            return False  # 注入式工厂不访问真实 Selenium 会话。
+        previous_timeout = configure_transport(driver, 3)
+        try:
+            return not driver.window_handles
+        except (InvalidSessionIdException, NoSuchWindowException):
+            return True
+        except Exception:
+            # 无法确认会话已关闭时不新开第二个浏览器抢占同一配置。
+            raise PlatformOperationError("平台浏览器连接异常，无法确认窗口状态；请检查本工具浏览器后再开始") from None
+        finally:
+            if previous_timeout is not None:
+                configure_transport(driver, previous_timeout)
 
     @staticmethod
     def _close_browser(browser):

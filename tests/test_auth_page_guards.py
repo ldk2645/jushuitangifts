@@ -85,6 +85,7 @@ class FormAuthenticationGuardsTests(unittest.TestCase):
     def make_prepare_page(self, guard):
         driver = Mock()
         driver.current_url = "https://work.bytenew.com/"
+        driver.execute_script.return_value = True
         page = BanniuPage(driver, authenticate=guard)
         page._visible = Mock(return_value=[])
         page._fill_prepared = Mock()
@@ -108,6 +109,7 @@ class FormAuthenticationGuardsTests(unittest.TestCase):
 
     def make_submit_page(self, guard):
         page = BanniuPage(Mock(), authenticate=guard, timeout=.01)
+        page.driver.execute_script.return_value = True
         page.prepare = Mock()
         page._validate_prepared = Mock()
         page._dialog = Mock()

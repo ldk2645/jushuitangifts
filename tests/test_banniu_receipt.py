@@ -6,7 +6,7 @@ from datetime import datetime
 from unittest.mock import Mock, patch
 
 from gift_registry.banniu_page import GIFT_COLUMNS
-from gift_registry.banniu_receipt import BanniuReceiptReader, complete_task_rows, receipt_from_detail
+from gift_registry.banniu_receipt import BanniuReceiptReader, TaskListNotReadyError, complete_task_rows, receipt_from_detail
 from gift_registry.workflow import GiftRecord, OrderSnapshot, PlatformOperationError, RegistrationRequest, SubmissionReceipt
 
 
@@ -54,6 +54,13 @@ class TaskListTests(unittest.TestCase):
 
 
 class ReceiptDetailTests(unittest.TestCase):
+    def test_nonfinal_and_unknown_sync_states_never_confirm_success(self):
+        for state in ('同步中', '待同步', '处理中', '未知状态'):
+            snapshot = detail()
+            snapshot['fields']['同步状态'] = state
+            with self.subTest(state=state):
+                self.assertIsNone(receipt_from_detail(snapshot, REQUEST, BEFORE, TASK))
+
     def test_matching_saved_task_returns_only_new_jst_id_with_leading_zeros(self):
         receipt = receipt_from_detail(detail(), REQUEST, BEFORE, TASK, not_before=SUBMITTED_AT)
         self.assertTrue(receipt.accepted)
@@ -100,6 +107,27 @@ class ReceiptDetailTests(unittest.TestCase):
 
 
 class ReceiptPollingTests(unittest.TestCase):
+    def test_pending_sync_is_reread_then_success_without_resubmitting(self):
+        reader = self.reader()
+        reader.query_tasks.return_value = [task()]
+        pending = detail()
+        pending['fields']['同步状态'] = '同步中'
+        reader.read_detail.side_effect = [
+            receipt_from_detail(pending, REQUEST, BEFORE, TASK),
+            receipt_from_detail(detail(), REQUEST, BEFORE, TASK)]
+        with patch('gift_registry.banniu_receipt.time.sleep'):
+            self.assertTrue(reader.wait_for_receipt(REQUEST, BEFORE, set(), SUBMITTED_AT).accepted)
+        self.assertEqual(reader.query_tasks.call_count, 2)
+        self.assertEqual(reader.page.mock_calls, [])
+
+    def test_pending_candidate_cannot_be_replaced_by_a_different_new_task(self):
+        reader = self.reader()
+        reader.query_tasks.side_effect = [[task()], [task(identifier='000053')]]
+        reader.read_detail.return_value = None
+        with patch('gift_registry.banniu_receipt.time.sleep'), self.assertRaisesRegex(PlatformOperationError, '新增任务发生变化'):
+            reader.wait_for_receipt(REQUEST, BEFORE, set(), SUBMITTED_AT)
+        self.assertEqual(reader.open_task.call_count, 1)
+
     def reader(self):
         reader = BanniuReceiptReader(Mock())
         reader.query_tasks = Mock()
@@ -131,8 +159,8 @@ class ReceiptPollingTests(unittest.TestCase):
             with self.subTest(rows=rows), patch("gift_registry.banniu_receipt.time.sleep") as sleep:
                 with self.assertRaisesRegex(PlatformOperationError, "未取得明确回执"):
                     reader.wait_for_receipt(REQUEST, BEFORE, {"000051"}, SUBMITTED_AT)
-            self.assertEqual(reader.query_tasks.call_count, 4)
-            self.assertEqual(sleep.call_count, 3)
+            self.assertEqual(reader.query_tasks.call_count, 8)
+            self.assertEqual(sleep.call_count, 7)
             self.assertEqual(reader.page.mock_calls, [])
 
     def test_ambiguous_new_tasks_and_mismatched_detail_stop_without_retry(self):
@@ -154,7 +182,7 @@ class ReceiptPollingTests(unittest.TestCase):
         sleep.assert_not_called()
 
     def test_polling_limits_are_validated_before_any_read(self):
-        for queries, interval in ((0, 2), (5, 2), (4, -1), (4, 6)):
+        for queries, interval in ((0, 2), (9, 2), (4, -1), (4, 6)):
             reader = self.reader()
             with self.subTest(queries=queries, interval=interval), self.assertRaises(ValueError):
                 reader.wait_for_receipt(REQUEST, BEFORE, set(), SUBMITTED_AT, queries=queries, interval=interval)
@@ -162,6 +190,29 @@ class ReceiptPollingTests(unittest.TestCase):
 
 
 class ReceiptQueryTests(unittest.TestCase):
+    def test_incomplete_list_gets_only_one_readonly_refresh(self):
+        reader = BanniuReceiptReader(Mock())
+        reader._query_tasks_once = Mock(side_effect=[TaskListNotReadyError('stale'), [task()]])
+        self.assertEqual(reader.query_tasks(ORDER), [task()])
+        self.assertEqual(reader._query_tasks_once.call_count, 2)
+        reader._query_tasks_once.assert_called_with(ORDER, refresh=True)
+        self.assertEqual(reader.page.mock_calls, [])
+
+    def test_still_incomplete_after_refresh_fails_without_more_reads(self):
+        reader = BanniuReceiptReader(Mock())
+        reader._query_tasks_once = Mock(side_effect=TaskListNotReadyError('stale'))
+        with self.assertRaises(TaskListNotReadyError):
+            reader.query_tasks(ORDER)
+        self.assertEqual(reader._query_tasks_once.call_count, 2)
+        self.assertEqual(reader.page.mock_calls, [])
+
+    def test_new_manual_form_blocks_readonly_refresh(self):
+        page = Mock()
+        page._visible.return_value = [Mock()]
+        with self.assertRaisesRegex(PlatformOperationError, '未关闭的任务表单'):
+            BanniuReceiptReader(page)._query_tasks_once(ORDER, refresh=True)
+        page.driver.refresh.assert_not_called()
+
     def query_reader(self, page, field):
         reader = BanniuReceiptReader(page)
         reader._order_filter = Mock(return_value=field)
@@ -180,6 +231,8 @@ class ReceiptQueryTests(unittest.TestCase):
 
         def execute(script):
             nonlocal observing
+            if 'gift-registration-list-ready' in script:
+                return True
             if "gift-banniu-observe" in script:
                 observing = True
             if "gift-banniu-fresh" in script:
@@ -235,6 +288,8 @@ class ReceiptQueryTests(unittest.TestCase):
 
         def execute(script):
             nonlocal initial_reads, observing
+            if 'gift-registration-list-ready' in script:
+                return True
             if "gift-banniu-observe" in script:
                 observing = True
             if "gift-banniu-fresh" in script:
@@ -289,6 +344,8 @@ class ReceiptQueryTests(unittest.TestCase):
             return toggle if selector == 'button.worksheet-main-content-bar-item-set' else button
 
         def execute(script):
+            if 'gift-registration-list-ready' in script:
+                return True
             if "gift-banniu-list" in script:
                 return {"pager": "共 1 条", "rows": [task()]}
             if "gift-banniu-fresh" in script:

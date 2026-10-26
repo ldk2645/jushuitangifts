@@ -62,12 +62,21 @@ def main():
             catalog = driver.execute_script("return giftCatalog")
             source_lines = (ROOT / "example.md").read_text(encoding="utf-8").split("example:")[0].splitlines()[1:]
             source = dict(line.split(None, 1) for line in source_lines if line.strip())
-            assert len(catalog) == len(source) == 31
-            assert {gift["id"]: gift["name"] for gift in catalog} == source
+            assert len(source) == 31
+            assert catalog == catalog_store.read()
+            assert set(source).issubset({gift['id'] for gift in catalog})
+            label_ids = {}
+            for gift in catalog:
+                for label in (gift['id'], gift['name'], *gift['aliases']):
+                    normalized = driver.execute_script('return normalizeGift(arguments[0])', label)
+                    label_ids.setdefault(normalized, set()).add(gift['id'])
             for gift in catalog:
                 for value in (gift["id"], gift["name"], *gift["aliases"]):
                     matched = driver.execute_script("return matchGifts(arguments[0])", value)
-                    assert matched == {"ids": [gift["id"]], "unmatched": []}, (value, matched)
+                    normalized = driver.execute_script('return normalizeGift(arguments[0])', value)
+                    expected = ({'ids': [gift['id']], 'unmatched': []} if len(label_ids[normalized]) == 1
+                                else {'ids': [], 'unmatched': [value]})
+                    assert matched == expected, (value, matched)
 
             def control(field, index=0):
                 main_row = driver.find_elements(By.CSS_SELECTOR, "#grid-body tr[data-id]")[index]
@@ -155,6 +164,16 @@ def main():
                 if(Math.abs((a.left+a.right-b.left-b.right)/2)>2) throw new Error('Gift chips are not centered');
             """)
             control("change_address").click()
+            assert control("change_address").get_attribute("aria-disabled") == "true"
+            assert control("change_address").get_attribute("aria-checked") == "false"
+            assert not driver.find_elements(By.CSS_SELECTOR, ".address-details")
+            # 本版本不能新开改地址；隔离存档载入历史“是”草稿，验证仍可关闭。
+            saved()
+            document = store.read()
+            document['rows'][0]['change_address'] = True
+            store.write(document['revision'], document['rows'])
+            driver.refresh()
+            wait.until(lambda d: control('change_address').get_attribute('aria-checked') == 'true')
             assert len(labels()) == 4
             assert len(driver.find_elements(By.CSS_SELECTOR, ".address-details")) == 1
             assert control("change_address").get_attribute("aria-checked") == "true"
@@ -177,8 +196,10 @@ def main():
             assert len(labels()) == 4
             assert not driver.find_elements(By.CSS_SELECTOR, ".address-details")
             control("change_address").send_keys(Keys.SPACE)
-            assert control("address").get_attribute("value") == "上海市 测试区 示例路 88 号"
+            assert control("change_address").get_attribute("aria-checked") == "false"
+            assert not driver.find_elements(By.CSS_SELECTOR, ".address-details")
             saved()
+            assert store.read()['rows'][0]['address'] == "上海市 测试区 示例路 88 号"
 
             control("order_no").click()
             clipboard = '订单号\t礼品\t是否改地址\t姓名\t电话\t地址\t状态\r\n00009\t口袋保温杯+小米背包\t是\t测试姓名\t000123456\t测试地址\t已完成\r\n00010\t小米小背抱\t否\t\t\t\t\r\n'

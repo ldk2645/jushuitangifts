@@ -3,7 +3,7 @@
 const $ = (selector) => document.querySelector(selector);
 const fields = {
   order_no: { label: "订单号", placeholder: "输入订单号", max: 200 },
-  gift: { label: "礼品", placeholder: "输入礼品名称", max: 500 },
+  gift: { label: "礼品", placeholder: "多个礼品用逗号、顿号或空格分隔", max: 500 },
   change_address: { label: "是否改地址" },
   recipient_name: { label: "姓名", placeholder: "收件人姓名", max: 100 },
   phone: { label: "电话", placeholder: "收件人电话", max: 60 },
@@ -16,6 +16,8 @@ let version = 0, savedVersion = 0, saveTimer, saving = null, conflict = false, t
 let giftCatalog = [], rowStates = {}, pickerRowId = null, starting = false;
 let creatingGift = false, createGiftRowId = null, catalogRefreshing = null;
 let catalogEditable = false;
+const recentGiftOrderLimit = 100;
+let pickerGiftUsage = null;
 let selection = null, editing = null, dragSelection = null, dragFrame = null, suppressCellClick = false;
 let rowNodes = new Map(), selectedNodes = new Set(), forceRangeCopy = false;
 const rangeClipboardType = "application/x-gift-registry-range+json";
@@ -147,41 +149,126 @@ function similarity(a, b) {
   }
   return 1 - previous[b.length] / Math.max(a.length, b.length, 1);
 }
+function giftLabelScore(value, candidate) {
+  if (candidate === value) return 1;
+  if (candidate.includes(value) || value.includes(candidate)) return .8 + .15 * Math.min(candidate.length, value.length) / Math.max(candidate.length, value.length);
+  return Math.min(value.length, candidate.length) >= 2 ? similarity(value, candidate) * .9 : 0;
+}
 function giftScore(text, gift) {
   const value = normalizeGift(text);
   if (!value) return 0;
-  return Math.max(...[gift.id, gift.name, ...(gift.aliases || [])].map(label => {
-    const candidate = normalizeGift(label);
-    if (candidate === value) return 1;
-    if (candidate.includes(value) || value.includes(candidate)) return .8 + .15 * Math.min(candidate.length, value.length) / Math.max(candidate.length, value.length);
-    return Math.min(value.length, candidate.length) >= 2 ? similarity(value, candidate) * .9 : 0;
-  }));
+  return Math.max(...[gift.id, gift.name, ...(gift.aliases || [])].map(label => giftLabelScore(value, normalizeGift(label))));
+}
+let giftMatcher = null;
+function matchingContext() {
+  if (giftMatcher?.catalog === giftCatalog && giftMatcher.size === giftCatalog.length) return giftMatcher;
+  const exact = new Map(), entries = [], protectedLabels = [];
+  let maxWords = 8;
+  for (const gift of giftCatalog) {
+    const labels = [gift.id, gift.name, ...(gift.aliases || [])];
+    entries.push({ gift, labels: [...new Set(labels.map(normalizeGift).filter(Boolean))] });
+    for (const label of labels) {
+      const key = normalizeGift(label);
+      if (!exact.has(key)) exact.set(key, new Set());
+      exact.get(key).add(gift.id);
+      maxWords = Math.max(maxWords, label.trim().split(/\s+/u).length + 2);
+      if (/[,，、;；+＋|｜\n]/u.test(label)) {
+        const pattern = label.trim().split(/\s+/u).map(part => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+");
+        protectedLabels.push({ label, pattern: new RegExp(`^(?:${pattern})`, "iu") });
+      }
+    }
+  }
+  protectedLabels.sort((a, b) => b.label.length - a.label.length);
+  giftMatcher = { catalog: giftCatalog, size: giftCatalog.length, exact, entries, protectedLabels, maxWords, parts: new Map(), results: new Map() };
+  return giftMatcher;
+}
+function resolveGiftPart(text, strict = false) {
+  const context = matchingContext(), value = normalizeGift(text), key = `${strict ? "phrase" : "word"}:${value}`;
+  if (context.parts.has(key)) return context.parts.get(key);
+  const exact = context.exact.get(value);
+  let result;
+  if (exact) result = { id: exact.size === 1 ? [...exact][0] : null, score: exact.size === 1 ? 1 : 0, exact: true };
+  else {
+    const matches = context.entries.map(({ gift, labels }) => {
+      // 跨空格的短语必须整体相似，不能只因包含一个已知简称就吞掉其他礼品。
+      const meaningful = value.length >= 3 || labels.some(label => Math.min(value.length, label.length) / Math.max(value.length, label.length, 1) >= .5);
+      const score = strict ? Math.max(0, ...labels.map(label => Math.min(value.length, label.length) / Math.max(value.length, label.length, 1) >= .8 ? similarity(value, label) * .9 : 0)) : meaningful ? giftScore(text, gift) : 0;
+      return { id: gift.id, score };
+    }).sort((a, b) => b.score - a.score);
+    const best = matches[0], next = matches[1];
+    result = best && best.score >= (strict ? .72 : .59) && (!next || best.score - next.score >= .08)
+      ? best : { id: null, score: 0 };
+    if (strict && result.id) {
+      const coverage = context.entries.map(({ gift, labels }) => ({ id: gift.id, score: Math.max(0, ...labels.map(label =>
+        Math.min(value.length, label.length) / Math.max(value.length, label.length, 1) >= .65 ? giftLabelScore(value, label) : 0)) }))
+        .sort((a, b) => b.score - a.score);
+      if (coverage[0]?.id !== result.id || (coverage[1] && coverage[0].score - coverage[1].score < .08)) result = { id: null, score: 0 };
+    }
+  }
+  if (context.parts.size > 3000) context.parts.clear();
+  context.parts.set(key, result);
+  return result;
 }
 function splitGiftParts(text) {
-  // 名称内的“+、逗号”等也可能是商品名称的一部分，优先保留完整的已知名称。
+  // 逗号等为强分隔符；已知名称内部的标点和空格先保留。
   const delimiter = /[,，、;；+＋|｜\n]/;
-  const protectedLabels = [...new Set(giftCatalog.flatMap(gift => [gift.id, gift.name, ...(gift.aliases || [])]))]
-    .filter(label => delimiter.test(label)).sort((a, b) => b.length - a.length);
+  const { protectedLabels } = matchingContext();
   const parts = []; let part = "";
   for (let index = 0; index < text.length;) {
-    const label = !part.trim() && protectedLabels.find(value => text.slice(index, index + value.length).toLowerCase() === value.toLowerCase()
-      && (!text.slice(index + value.length).trimStart() || delimiter.test(text.slice(index + value.length).trimStart()[0])));
-    if (label) { part += text.slice(index, index + label.length); index += label.length; }
+    let protectedText = null;
+    if (!part.trim()) {
+      for (const { pattern } of protectedLabels) {
+        const matched = pattern.exec(text.slice(index))?.[0], next = matched ? text[index + matched.length] : null;
+        if (matched && (!next || delimiter.test(next) || /\s/u.test(next))) { protectedText = matched; break; }
+      }
+    }
+    if (protectedText) { part += protectedText; index += protectedText.length; }
     else if (delimiter.test(text[index])) { if (part.trim()) parts.push(part.trim()); part = ""; index++; }
     else part += text[index++];
   }
   if (part.trim()) parts.push(part.trim());
   return parts;
 }
+function matchSpaceGiftParts(text) {
+  const whole = resolveGiftPart(text), words = text.trim().split(/\s+/u);
+  // 完整名称、编码或别名不因内部空格而被拆开；歧义的完整名称也保留待确认。
+  if (words.length === 1 || whole.exact) return [{ text, match: whole }];
+  const context = matchingContext(), plans = Array(words.length + 1);
+  plans[words.length] = { weight: 0, count: 0 };
+  for (let start = words.length - 1; start >= 0; start--) {
+    const single = resolveGiftPart(words[start]);
+    let best = { weight: normalizeGift(words[start]).length * single.score + plans[start + 1].weight,
+      count: plans[start + 1].count + 1, end: start + 1, text: words[start], match: single };
+    for (let end = start + 2; end <= Math.min(words.length, start + context.maxWords); end++) {
+      const phrase = words.slice(start, end).join(" "), match = resolveGiftPart(phrase, true);
+      if (!match.id) continue;
+      const candidate = { weight: normalizeGift(phrase).length * match.score + plans[end].weight,
+        count: plans[end].count + 1, end, text: phrase, match };
+      if (candidate.weight > best.weight + .000001 || (Math.abs(candidate.weight - best.weight) <= .000001 && candidate.count < best.count)) best = candidate;
+    }
+    plans[start] = best;
+  }
+  const parts = [];
+  for (let start = 0; start < words.length;) {
+    const plan = plans[start], previous = parts.at(-1);
+    if (!plan.match.id && previous && !previous.match.id) previous.text += ` ${plan.text}`;
+    else parts.push({ text: plan.text, match: plan.match });
+    start = plan.end;
+  }
+  return parts;
+}
 function matchGifts(text) {
+  const context = matchingContext(), cached = context.results.get(text);
+  if (cached) return { ids: [...cached.ids], unmatched: [...cached.unmatched] };
   const ids = [], unmatched = [];
   for (const part of splitGiftParts(text)) {
-    const matches = giftCatalog.map(gift => ({ gift, score: giftScore(part, gift) })).sort((a, b) => b.score - a.score);
-    const best = matches[0], next = matches[1];
-    if (best && best.score >= .59 && (!next || (best.score === 1 && next.score < 1) || best.score - next.score >= .08)) {
-      if (!ids.includes(best.gift.id)) ids.push(best.gift.id);
-    } else unmatched.push(part);
+    for (const segment of matchSpaceGiftParts(part)) {
+      if (segment.match.id) { if (!ids.includes(segment.match.id)) ids.push(segment.match.id); }
+      else unmatched.push(segment.text);
+    }
   }
+  if (context.results.size > 2000) context.results.clear();
+  context.results.set(text, { ids: [...ids], unmatched: [...unmatched] });
   return { ids, unmatched };
 }
 function giftNames(ids) { return ids.map(id => giftCatalog.find(gift => gift.id === id)?.name).filter(Boolean); }
@@ -288,14 +375,29 @@ function updateSummary() {
   $("#metric-success").textContent = count("success");
   $("#metric-failed").textContent = count("failed");
 }
-function closeGiftPicker() { pickerRowId = null; $("#gift-picker").hidden = true; document.querySelectorAll('.gift-trigger[aria-expanded="true"]').forEach(button => button.setAttribute("aria-expanded", "false")); }
+function closeGiftPicker() { pickerRowId = null; pickerGiftUsage = null; $("#gift-picker").hidden = true; document.querySelectorAll('.gift-trigger[aria-expanded="true"]').forEach(button => button.setAttribute("aria-expanded", "false")); }
+function recentGiftUsage() {
+  const known = new Set(giftCatalog.map(gift => gift.id)), orders = new Map();
+  // 新行追加在表格末尾；按末尾往前选最近的不同订单，而不是按订单号大小排序。
+  for (let index = rows.length - 1; index >= 0; index--) {
+    const row = rows[index], orderNo = row.order_no.trim();
+    if (!orderNo) continue;
+    const ids = (row.gift_ids || []).filter(id => known.has(id));
+    if (!ids.length || (!orders.has(orderNo) && orders.size >= recentGiftOrderLimit)) continue;
+    if (!orders.has(orderNo)) orders.set(orderNo, new Set());
+    for (const id of ids) orders.get(orderNo).add(id);
+  }
+  const counts = new Map();
+  for (const gifts of orders.values()) for (const id of gifts) counts.set(id, (counts.get(id) || 0) + 1);
+  return { counts, orderCount: orders.size };
+}
 function renderGiftCell(cell, row, index) {
   cell.replaceChildren();
   const button = document.createElement("button");
   button.type = "button"; button.className = "gift-trigger";
   button.setAttribute("aria-label", `第 ${index + 2} 行 礼品（可多选）`);
   button.setAttribute("aria-haspopup", "dialog"); button.setAttribute("aria-expanded", String(pickerRowId === row.id));
-  button.title = row.gift || "选择礼品，可多选；粘贴时自动匹配名称或别名";
+  button.title = row.gift || "选择或粘贴多个礼品，可用中文逗号、英文逗号、顿号或空格分隔，自动模糊匹配名称或别名";
   const chips = document.createElement("span"); chips.className = "gift-chips";
   const names = giftNames(row.gift_ids || []), unmatched = unresolvedGiftLabels(row);
   for (const name of names) { const chip = document.createElement("span"); chip.className = "gift-chip"; chip.textContent = name; chips.append(chip); }
@@ -317,6 +419,8 @@ function updateGiftRow(row) {
 }
 function openGiftPicker(row, anchor) {
   closeGiftPicker(); pickerRowId = row.id;
+  // 本次打开期间固定频率，勾选不会让鼠标下的选项突然换位。
+  pickerGiftUsage = recentGiftUsage();
   const picker = $("#gift-picker"); picker.hidden = false;
   anchor.setAttribute("aria-expanded", "true");
   $("#gift-search").value = "";
@@ -347,9 +451,15 @@ function renderGiftOptions() {
   const row = rows.find(row => row.id === pickerRowId);
   if (!row) return closeGiftPicker();
   const query = $("#gift-search").value.trim();
-  const candidates = giftCatalog.map(gift => ({ gift, score: query ? giftScore(query, gift) : 1 })).filter(item => item.score >= .45).sort((a, b) => b.score - a.score);
+  const usage = pickerGiftUsage || recentGiftUsage();
+  const candidates = giftCatalog.map((gift, index) => ({ gift, index, count: usage.counts.get(gift.id) || 0, score: query ? giftScore(query, gift) : 1 }))
+    .filter(item => item.score >= .45).sort((a, b) => b.score - a.score || b.count - a.count || a.index - b.index);
+  $("#gift-sort-hint").textContent = usage.orderCount
+    ? `${query ? "匹配优先 · " : ""}按近 ${usage.orderCount} 个订单的礼赠频率排序`
+    : "暂无订单使用记录，按清单顺序显示";
+  $("#gift-sort-hint").title = `统计当前表格末尾最近 ${recentGiftOrderLimit} 个有礼赠的不同订单；同一订单同一礼赠只计一次，同频保留原清单顺序。`;
   const list = $("#gift-options"); list.replaceChildren();
-  for (const { gift } of candidates) {
+  for (const { gift, count } of candidates) {
     const label = document.createElement("label"), check = document.createElement("input"), text = document.createElement("span"), code = document.createElement("small");
     label.className = "gift-option"; check.type = "checkbox"; check.value = gift.id; check.checked = row.gift_ids.includes(gift.id);
     text.textContent = gift.name; code.textContent = gift.id;
@@ -359,7 +469,13 @@ function renderGiftOptions() {
       assignGifts(row, ids, matchGifts(row.gift).unmatched);
       updateGiftRow(row); renderGiftOptions();
     });
-    label.append(check, text, code); list.append(label);
+    const meta = document.createElement("span"); meta.className = "gift-option-meta"; meta.append(code);
+    if (count) {
+      const frequency = document.createElement("em"); frequency.className = "gift-frequency";
+      frequency.textContent = `${count} 单`; frequency.title = `最近 ${usage.orderCount} 个订单中，有 ${count} 单选择此礼赠`;
+      meta.append(frequency);
+    }
+    label.append(check, text, meta); list.append(label);
   }
   if (!candidates.length) { const empty = document.createElement("p"); empty.className = "gift-no-results"; empty.textContent = "没有匹配选项，请尝试其他名称或别名"; list.append(empty); }
   const unmatched = unresolvedGiftLabels(row), notice = $("#gift-unmatched"); notice.replaceChildren(); notice.hidden = !unmatched.length;
@@ -528,15 +644,21 @@ function render() {
       } else if (field === "gift") {
         renderGiftCell(cell, row, index);
       } else if (field === "change_address") {
+        // 本版本不支持改地址：已有草稿只允许从“是”关回“否”，不能再开启。
+        const locked = !row.change_address;
         const toggle = document.createElement("button");
-        toggle.type = "button"; toggle.className = `address-toggle${row.change_address ? " is-yes" : ""}`;
+        toggle.type = "button"; toggle.className = `address-toggle${row.change_address ? " is-yes" : ""}${locked ? " is-locked" : ""}`;
         toggle.setAttribute("role", "checkbox"); toggle.setAttribute("aria-checked", String(row.change_address));
-        toggle.setAttribute("aria-label", `第 ${index + 2} 行 是否改地址：${row.change_address ? "是" : "否"}`);
-        toggle.title = row.change_address ? "是 · 点击取消改地址" : "否 · 点击改地址";
+        toggle.setAttribute("aria-disabled", String(locked));
+        toggle.setAttribute("aria-label", `第 ${index + 2} 行 是否改地址：${row.change_address ? "是" : "否"}${locked ? "（已禁用）" : ""}`);
+        toggle.title = locked ? "本版本暂不支持改地址，请保持“否”" : "是 · 点击关闭改地址（本版本不支持新地址）";
         const dot = document.createElement("span"); dot.className = "address-dot"; dot.setAttribute("aria-hidden", "true"); toggle.append(dot);
         toggle.addEventListener("focus", () => activate(row.id, field));
-        toggle.addEventListener("click", () => { selectRange({ id: row.id, field }); remember(); row.change_address = !row.change_address; changed(); render(); focusCell(row.id, field); });
-        toggle.addEventListener("paste", handlePaste);
+        toggle.addEventListener("click", () => {
+          if (locked) return;
+          selectRange({ id: row.id, field }); remember(); row.change_address = false; changed(); render(); focusCell(row.id, field);
+        });
+        if (!locked) toggle.addEventListener("paste", handlePaste);
         toggle.addEventListener("keydown", event => handleNavigation(event, row.id, field));
         cell.append(toggle);
       } else if (addressFields.includes(field) && !row.change_address) {
@@ -1084,7 +1206,7 @@ $("#login-button").addEventListener("click", async () => {
   finally { setTimeout(() => { button.disabled = false; }, 2000); }
 });
 $("#gift-search").addEventListener("input", renderGiftOptions);
-$("#gift-close").addEventListener("click", closeGiftPicker);
+$("#gift-close").addEventListener("click", () => { const id = pickerRowId; closeGiftPicker(); if (id) focusCell(id, "gift"); });
 $("#gift-done").addEventListener("click", () => { const id = pickerRowId; closeGiftPicker(); if (id) focusCell(id, "gift"); });
 $("#gift-clear").addEventListener("click", () => { const row = rows.find(row => row.id === pickerRowId); if (row) { remember(); assignGifts(row, []); updateGiftRow(row); renderGiftOptions(); } });
 document.addEventListener("pointerdown", event => { if (pickerRowId && !event.target.closest("#gift-picker,.gift-trigger")) closeGiftPicker(); });
@@ -1133,6 +1255,27 @@ async function refreshExecutionStates() {
   finally { setTimeout(refreshExecutionStates, document.hidden ? 5000 : 1500); }
 }
 
+let networkChangeId = null;
+function renderNetworkNotice(status) {
+  const notice = $("#network-notice");
+  notice.hidden = !["changed", "offline", "unavailable"].includes(status.state);
+  $("#network-notice-text").textContent = status.message || "";
+  networkChangeId = status.change_id;
+  $("#network-ack").hidden = status.state !== "changed" ||
+    !status.current_addresses?.some(address => address.ip === status.configured_ip);
+}
+async function refreshNetworkNotice() {
+  try { renderNetworkNotice(await api("/api/network/status")); }
+  catch { /* 保留已显示的提醒，网络探测不影响草稿和业务队列。 */ }
+  finally { setTimeout(refreshNetworkNotice, 10000); }
+}
+$("#network-ack").addEventListener("click", async () => {
+  const button = $("#network-ack"); button.disabled = true;
+  try { renderNetworkNotice(await api("/api/network/ack", { method: "POST", body: JSON.stringify({ change_id: networkChangeId }) })); }
+  catch (error) { toast(error.message, true); }
+  finally { button.disabled = false; }
+});
+
 (async () => {
   const buttons = [...document.querySelectorAll(".toolbar button,#add-bottom,#login-button")];
   buttons.forEach(button => { button.disabled = true; });
@@ -1144,7 +1287,12 @@ async function refreshExecutionStates() {
     const before = JSON.stringify(rows);
     rows.forEach(row => { const match = matchGifts(row.gift); assignGifts(row, match.ids, match.unmatched); });
     initialized = true;
+    if (config.network_settings_available) refreshNetworkNotice();
     buttons.forEach(button => { button.disabled = false; });
+    if (config.platform_login_available === false) {
+      const login = $("#login-button"); login.disabled = true; login.textContent = "平台登录由主机维护";
+      login.title = "如需登录或处理验证码，请在运行工具的主机上打开登录助手";
+    }
     render(); saveIndicator("草稿自动保存");
     if (JSON.stringify(rows) !== before) changed();
     focusCell(rows[0].id, "order_no");

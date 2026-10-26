@@ -4,7 +4,7 @@ import unittest
 from datetime import datetime
 from unittest.mock import Mock, patch
 
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import ElementClickInterceptedException, TimeoutException
 
 from gift_registry.banniu_page import BanniuPage, GIFT_COLUMNS, gifts_match, table_records
 from gift_registry.workflow import OrderSnapshot, PlatformOperationError, Recipient, RegistrationRequest, SubmissionReceipt
@@ -43,6 +43,7 @@ class BanniuPageTests(unittest.TestCase):
 
     def search_page(self, search_records, selected):
         page = BanniuPage(Mock(), timeout=.01)
+        page.driver.execute_script.return_value = True
         page._close_search = Mock()
         page._value = Mock(return_value="商家编码")
         page._set_text = Mock()
@@ -53,6 +54,21 @@ class BanniuPageTests(unittest.TestCase):
         page._table = Mock(return_value=(rows, search_records))
         page._selected_gifts = Mock(return_value=selected)
         return page, filter_button, rows
+
+    def test_observed_earphone_platform_name_is_accepted_only_for_its_exact_sku(self):
+        earphone = gift(商家编码='XS24AMA350021GK001', 货品名称='OWS31蓝牙耳机')
+        self.assertTrue(gifts_match([earphone], ('XS24AMA350021GK001',), ('椰球夹耳式耳机',)))
+        self.assertFalse(gifts_match([earphone], ('XS24AMA350021GK001',), ('其它耳机',)))
+        self.assertFalse(gifts_match([gift(货品名称='OWS31蓝牙耳机')], (SKU,), ('椰球夹耳式耳机',)))
+        self.assertFalse(gifts_match([earphone], ('OTHER-SKU',), ('椰球夹耳式耳机',)))
+
+    def test_observed_earphone_search_name_is_added_once_and_quantities_still_checked(self):
+        records = [gift(商家编码='XS24AMA350021GK001', 货品名称='OWS31蓝牙耳机')]
+        page, button, rows = self.search_page(records, records)
+        page._add_gift('XS24AMA350021GK001', '椰球夹耳式耳机', ('XS24AMA350021GK001',), ('椰球夹耳式耳机',))
+        button.click.assert_called_once()
+        rows[0].click.assert_called_once()
+        self.assertFalse(gifts_match([{**records[0], '数量':'2'}], ('XS24AMA350021GK001',), ('椰球夹耳式耳机',)))
 
     def test_first_search_result_must_match_even_if_later_result_matches(self):
         page, filter_button, rows = self.search_page([gift(商家编码="wrong"), gift()], [gift()])
@@ -113,6 +129,7 @@ class BanniuPageTests(unittest.TestCase):
 
     def submission_page(self):
         driver = Mock()
+        driver.execute_script.return_value = True
         page = BanniuPage(driver, timeout=.01)
         page.prepare = Mock()
         page._validate_prepared = Mock()
@@ -158,7 +175,7 @@ class BanniuPageTests(unittest.TestCase):
                 reader.wait_for_receipt.side_effect = PlatformOperationError("回执超时；禁止再次提交")
             with self.subTest(failure=failure), patch(
                     "gift_registry.banniu_receipt.BanniuReceiptReader", return_value=reader):
-                with self.assertRaises((TimeoutException, PlatformOperationError)):
+                with self.assertRaises(PlatformOperationError):
                     page.submit(request, before)
                 with self.assertRaisesRegex(PlatformOperationError, "禁止再次提交"):
                     page.submit(request, before)
@@ -190,6 +207,52 @@ class BanniuPageTests(unittest.TestCase):
             button.click.assert_not_called()
             reader.wait_for_receipt.assert_not_called()
             reader.query_tasks.assert_called_once()
+
+    def test_pre_submit_click_interception_reports_stage_without_sensitive_exception_text(self):
+        page, button, reader = self.submission_page()
+        reader.query_tasks.side_effect = ElementClickInterceptedException('secret-cookie-placeholder')
+        request = RegistrationRequest('0009', (SKU,), (NAME,))
+        with patch('gift_registry.banniu_receipt.BanniuReceiptReader', return_value=reader):
+            with self.assertRaises(PlatformOperationError) as error:
+                page.submit(request, OrderSnapshot('0009', True))
+            detail = str(error.exception)
+            self.assertIn('查询提交前任务基线', detail)
+            self.assertIn('未触发提交按钮', detail)
+            self.assertIn('ElementClickInterceptedException', detail)
+            self.assertNotIn('secret-cookie-placeholder', detail)
+            with self.assertRaisesRegex(PlatformOperationError, '禁止再次提交'):
+                page.submit(request, OrderSnapshot('0009', True))
+        button.click.assert_not_called()
+        page.prepare.assert_not_called()
+        reader.query_tasks.assert_called_once()
+
+    def test_submit_click_failure_remains_uncertain_and_is_never_repeated(self):
+        page, button, reader = self.submission_page()
+        button.click.side_effect = ElementClickInterceptedException('secret-token-placeholder')
+        request = RegistrationRequest('0009', (SKU,), (NAME,))
+        with patch('gift_registry.banniu_receipt.BanniuReceiptReader', return_value=reader):
+            with self.assertRaisesRegex(PlatformOperationError, '结果可能不确定') as error:
+                page.submit(request, OrderSnapshot('0009', True))
+            self.assertNotIn('secret-token-placeholder', str(error.exception))
+            with self.assertRaisesRegex(PlatformOperationError, '禁止再次提交'):
+                page.submit(request, OrderSnapshot('0009', True))
+        button.click.assert_called_once()
+
+    def test_click_waits_for_actual_hit_target_then_clicks_once(self):
+        driver, element = Mock(), Mock()
+        driver.execute_script.side_effect = [None, False, True]
+        page = BanniuPage(driver, timeout=1)
+        page._click_once(element)
+        element.click.assert_called_once()
+        self.assertEqual(driver.execute_script.call_count, 3)
+
+    def test_permanent_transparent_overlay_stops_without_click(self):
+        driver, element = Mock(), Mock()
+        driver.execute_script.return_value = False
+        page = BanniuPage(driver, timeout=.01)
+        with self.assertRaisesRegex(PlatformOperationError, '遮罩覆盖'):
+            page._click_once(element)
+        element.click.assert_not_called()
 
     def test_changed_address_submission_stops_before_browser_or_receipt_query(self):
         page, button, reader = self.submission_page()

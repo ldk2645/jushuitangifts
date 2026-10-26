@@ -1,6 +1,8 @@
 """班牛礼赠表单操作：同一订单的全部礼品加入同一任务，仅点击一次提交。"""
 
+import secrets
 import unicodedata
+from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
@@ -9,15 +11,57 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 
-from .workflow import PlatformOperationError, Recipient, RegistrationRequest, validate_snapshot
+from .workflow import PlatformOperationError, Recipient, RegistrationNotSubmittedError, RegistrationRequest, validate_snapshot
 
 
 BANNIU_REGISTRATION_URL = "https://work.bytenew.com/app.html#/applet/appNew/projectNew/54119/1883"
 GIFT_COLUMNS = ("退换补类型", "商家编码", "货品名称", "退换补商品金额", "数量")
 
+# 已在真实班牛任务和聚水潭同编码商品中核对的名称；只适用于此 SKU，不做模糊放行。
+_OBSERVED_GIFT_NAMES = {
+    'XS24AMA350021GK001': ('椰球夹耳式耳机', 'OWS31蓝牙耳机'),
+    'XS24A7A35002PMJ002': ('S11 Pro Max 智能手表（白色）', 'S11 Pro Max 智能手表'),
+    'N0800202036T000801': ('赠品《联想》蓝牙音箱', '《赠品》联想蓝牙音响'),
+}
+
+_REGISTRATION_LIST_READY = """
+// gift-registration-list-ready: only reuse a visible worksheet, never its results.
+const visible=e=>e.getClientRects().length && getComputedStyle(e).visibility!=='hidden' && Number(getComputedStyle(e).opacity)>0;
+const shown=selector=>[...document.querySelectorAll(selector)].filter(visible);
+const buttons=shown('button.edit-task-button-btn').filter(e=>e.textContent.trim()==='新建');
+if(shown('div.title.el-dropdown-selfdefine').filter(e=>e.textContent.trim()==='聚水潭赠品补发-融合').length!==1 ||
+   buttons.length!==1 || buttons[0].disabled || shown('.vxe-table').length!==1 ||
+   shown('.task-details,.worksheet-main-details-back,.w-edit-task-dialog,.el-loading-mask').length) return false;
+const button=buttons[0], r=button.getBoundingClientRect();
+const x=(Math.max(0,r.left)+Math.min(innerWidth,r.right))/2;
+const y=(Math.max(0,r.top)+Math.min(innerHeight,r.bottom))/2;
+const hit=document.elementFromPoint(x,y);
+return !!hit && (hit===button || button.contains(hit));
+"""
+
+
+def _open_registration_list(driver):
+    """调用方先拒绝未关闭的新建表单；详情或其它页面仍正常重新进入列表。"""
+    # 切回复用的班牛窗口，避免后台窗口延迟处理加载层的淡出动画。
+    driver.switch_to.window(driver.current_window_handle)
+    if driver.current_url != BANNIU_REGISTRATION_URL:
+        driver.get(BANNIU_REGISTRATION_URL)
+    elif driver.execute_script(_REGISTRATION_LIST_READY) is not True:
+        # 班牛使用 hash 路由；get 同一带片段 URL 可能只做同文档导航，保留旧详情遮罩。
+        # 仅在没有可见编辑表单、且列表不能交互时刷新一次，不在点击失败后重调登记。
+        driver.refresh()
+
 
 def _normalize(value):
     return "".join(unicodedata.normalize("NFKC", value).split())
+
+
+def _gift_name_matches(code, actual, expected):
+    actual, expected = _normalize(actual), _normalize(expected)
+    if actual == expected:
+        return True
+    observed = {_normalize(name) for name in _OBSERVED_GIFT_NAMES.get(code, ())}
+    return actual in observed and expected in observed
 
 
 def table_records(headers, rows):
@@ -41,7 +85,7 @@ def gifts_match(records, gift_ids, gift_names):
     if len(expected) != len(gift_names) or {row["商家编码"] for row in records} != set(expected):
         return False
     for row in records:
-        if row["退换补类型"] != "补发" or _normalize(row["货品名称"]) != _normalize(expected[row["商家编码"]]):
+        if row["退换补类型"] != "补发" or not _gift_name_matches(row['商家编码'], row['货品名称'], expected[row['商家编码']]):
             return False
         try:
             if Decimal(row["数量"]) != Decimal(1) or Decimal(row["退换补商品金额"]) != Decimal(0):
@@ -58,6 +102,7 @@ class BanniuPage:
         self.driver = driver
         self.timeout = timeout
         self._attempted = set()
+        self._owned_form = None
         self.authenticate = authenticate
 
     def _wait(self, predicate, detail):
@@ -87,16 +132,137 @@ class BanniuPage:
     def _dialog(self):
         return self._one(".w-edit-task-dialog")
 
+    def _click_once(self, element):
+        """等待真实点击位置可用，然后只点击一次；不绕过遮挡、不重试点击。"""
+        self.driver.execute_script("arguments[0].scrollIntoView({block:'center',inline:'center'})", element)
+
+        def ready(_):
+            if not element.is_displayed() or not element.is_enabled():
+                return False
+            return self.driver.execute_script("""
+                // gift-banniu-click-ready: transparent overlays can still receive pointer events.
+                const element=arguments[0],r=element.getBoundingClientRect();
+                if(!r.width || !r.height) return false;
+                const x=(Math.max(0,r.left)+Math.min(innerWidth,r.right))/2;
+                const y=(Math.max(0,r.top)+Math.min(innerHeight,r.bottom))/2;
+                const hit=document.elementFromPoint(x,y);
+                return !!hit && (hit===element || element.contains(hit));
+            """, element) is True
+
+        self._wait(ready, "班牛目标控件仍被遮罩覆盖或不可用，未点击；请人工核查")
+        with self._form_action():
+            element.click()
+
     def _field(self, selector):
         return self._one(selector, root=self._dialog())
+
+    def _track_form(self, root, request):
+        token = secrets.token_urlsafe(16)
+        tracked = self.driver.execute_script("""
+            // gift-track-owned-form: retain DOM identity and any human/program submit interaction.
+            const root=arguments[0], token=arguments[1];
+            if(!root.isConnected || root.__giftRegistrationOwner) return false;
+            const state={token,submitSeen:false,manualEdited:false,automation:0};
+            state.click=e=>{
+                const button=e.target.closest('button');
+                if(button && root.contains(button) && ['提交','提交并新增'].includes(button.textContent.trim())) state.submitSeen=true;
+            };
+            state.submit=()=>{state.submitSeen=true};
+            state.edit=e=>{if(e.isTrusted && state.automation===0) state.manualEdited=true};
+            root.addEventListener('click',state.click,true);
+            root.addEventListener('submit',state.submit,true);
+            for(const event of ['input','change','keydown','pointerdown','click']) root.addEventListener(event,state.edit,true);
+            root.__giftRegistrationOwner=state;
+            return true;
+        """, root, token)
+        if tracked is not True:
+            raise PlatformOperationError('班牛新建表单归属无法确认，未继续填写')
+        self._owned_form = (root, request, token)
+
+    @contextmanager
+    def _form_action(self):
+        owned = self._owned_form
+        if owned is None:
+            yield
+            return
+        root, _, token = owned
+        if self.driver.execute_script("""
+            const state=arguments[0].__giftRegistrationOwner;
+            if(!state || state.token!==arguments[1] || state.manualEdited) return false;
+            state.automation++;return true;
+        """, root, token) is not True:
+            raise PlatformOperationError('班牛表单已被人工操作或归属变化，未继续自动填写或点击')
+        try:
+            yield
+        finally:
+            try:
+                self.driver.execute_script("""
+                    const state=arguments[0].__giftRegistrationOwner;
+                    if(state?.token===arguments[1]) state.automation=Math.max(0,state.automation-1);
+                """, root, token)
+            except WebDriverException:
+                pass
+
+    def _send_keys(self, element, *keys):
+        with self._form_action():
+            element.send_keys(*keys)
+
+    def _forget_form(self):
+        owned, self._owned_form = self._owned_form, None
+        if owned is not None:
+            try:
+                self.driver.execute_script("""
+                    const root=arguments[0],state=root.__giftRegistrationOwner;
+                    if(state?.token===arguments[1]) {
+                        root.removeEventListener('click',state.click,true);
+                        root.removeEventListener('submit',state.submit,true);
+                        for(const event of ['input','change','keydown','pointerdown','click']) root.removeEventListener(event,state.edit,true);
+                        delete root.__giftRegistrationOwner;
+                    }
+                """, owned[0], owned[2])
+            except WebDriverException:
+                pass
+
+    def _discard_unsubmitted_form(self, request):
+        """只关闭本次创建、未触发提交、订单及已选礼品仍符合请求的表单。"""
+        if self._owned_form is None or self._owned_form[1] != request:
+            return 'none'
+        root, _, token = self._owned_form
+        try:
+            forms = self._visible(self.driver, '.w-edit-task-dialog')
+            if not forms:
+                self._forget_form()
+                return 'none'
+            if len(forms) != 1 or forms[0] != root:
+                return 'preserved'
+            if self._value('#col_1891 textarea') not in ('', request.order_no):
+                return 'preserved'
+            selected = (self._selected_gifts() if self._visible(root, '#col_1915 .children-box-body > .el-table') else [])
+            count = len(selected)
+            if not gifts_match(selected, request.gift_ids[:count], request.gift_names[:count]):
+                return 'preserved'
+            if self.driver.execute_script("""
+                // gift-owned-form-can-close: never adopt a pre-existing form or a submit-uncertain form.
+                const root=arguments[0],state=root.__giftRegistrationOwner;
+                return root.isConnected && state?.token===arguments[1] && state.submitSeen===false && state.manualEdited===false;
+            """, root, token) is not True:
+                return 'preserved'
+            self._click_once(self._one('.w-dialog-title > .w-dialog-close', root=root))
+            self._wait(lambda _: not self._visible(self.driver, '.w-edit-task-dialog'),
+                       '班牛本次未提交表单未关闭')
+            self._forget_form()
+            return 'closed'
+        except (PlatformOperationError, WebDriverException):
+            return 'preserved'
 
     def _value(self, selector):
         return self._field(selector).get_attribute("value") or ""
 
     def _set_text(self, selector, value):
         element = self._field(selector)
-        element.clear()
-        element.send_keys(value)
+        with self._form_action():
+            element.clear()
+            element.send_keys(value)
         self._wait(lambda _: self._value(selector) == value, "班牛字段未完整接收输入，未继续填写")
         return element
 
@@ -106,7 +272,7 @@ class BanniuPage:
 
     def _choose_radio(self, column, title):
         if not self._radio_selected(column, title):
-            self._field(f'#{column} .radio-box-txt[title="{title}"]').click()
+            self._click_once(self._field(f'#{column} .radio-box-txt[title="{title}"]'))
             self._wait(lambda _: self._radio_selected(column, title), "班牛单选项未生效，未继续填写")
 
     def _table(self, selector):
@@ -144,7 +310,7 @@ class BanniuPage:
         if panels:
             if len(panels) != 1:
                 raise PlatformOperationError("班牛礼品搜索结果区域不唯一，未继续填写")
-            self._one(":scope > .icon-guanbi", root=panels[0]).click()
+            self._click_once(self._one(":scope > .icon-guanbi", root=panels[0]))
             self._wait(lambda _: not self._visible(self._dialog(), "#col_1915 .child-search-search-task"),
                        "班牛礼品搜索结果未关闭，未继续填写")
 
@@ -153,16 +319,16 @@ class BanniuPage:
         if self._value("#col_1915 .child-search-search-select input") != "商家编码":
             raise PlatformOperationError("班牛礼品搜索方式不是商家编码，未继续填写")
         self._set_text("#col_1915 .child-search-search-condition input", gift_id)
-        self._one("#col_1915 .child-search-search-condition button", root=self._dialog(), text="筛选").click()
+        self._click_once(self._one("#col_1915 .child-search-search-condition button", root=self._dialog(), text="筛选"))
 
         def first_matching(_):
             rows, values = self._table("#col_1915 .child-search-search-task-table > .el-table")
-            if not rows or values[0]["商家编码"] != gift_id or _normalize(values[0]["货品名称"]) != _normalize(gift_name):
+            if not rows or values[0]["商家编码"] != gift_id or not _gift_name_matches(gift_id, values[0]['货品名称'], gift_name):
                 return False
             return rows[0]
 
         first = self._wait(first_matching, "班牛首条礼品搜索结果与所选编码及名称不符，未添加礼品")
-        first.click()
+        self._click_once(first)
         self._wait(lambda _: gifts_match(self._selected_gifts(), expected_ids, expected_names),
                    "班牛已选礼品、数量或金额与本次请求不一致，未继续填写")
 
@@ -218,11 +384,12 @@ class BanniuPage:
         self.driver.switch_to.default_content()
         if self._visible(self.driver, ".w-edit-task-dialog"):
             raise PlatformOperationError("班牛已有未关闭的任务表单，请先人工处理该表单")
-        if self.driver.current_url != BANNIU_REGISTRATION_URL:
-            self.driver.get(BANNIU_REGISTRATION_URL)
+        _open_registration_list(self.driver)
         if self.authenticate is not None:
             self.authenticate(target_url=BANNIU_REGISTRATION_URL)
         try:
+            self._wait(lambda _: self.driver.execute_script(_REGISTRATION_LIST_READY) is True,
+                       "班牛礼赠列表仍被详情或遮罩覆盖，未打开新建表单")
             self._fill_prepared(request)
         except (PlatformOperationError, WebDriverException):
             if self.authenticate is not None and self.authenticate():
@@ -230,13 +397,14 @@ class BanniuPage:
             raise
 
     def _fill_prepared(self, request):
-        self._one("button.edit-task-button-btn", text="新建").click()
-        self._dialog()
+        self._click_once(self._one("button.edit-task-button-btn", text="新建"))
+        root = self._dialog()
         if self._value("#col_1891 textarea").strip():
             raise PlatformOperationError("班牛新建表单已有订单号，未覆盖原内容")
+        self._track_form(root, request)
         self._choose_radio("col_1887", "补发")
         self._choose_radio("col_1890", "非原单改地址" if request.recipient else "非原单原地址")
-        self._set_text("#col_1891 textarea", request.order_no).send_keys(Keys.ENTER)
+        self._send_keys(self._set_text("#col_1891 textarea", request.order_no), Keys.ENTER)
 
         def order_loaded(_):
             column = self._field("#col_1891")
@@ -247,8 +415,8 @@ class BanniuPage:
         self._wait(order_loaded, "班牛未确认拉取到该订单的最新数据，未继续填写")
         if self._selected_gifts():
             raise PlatformOperationError("班牛新建表单已有商品明细，未覆盖原内容")
-        self._field("#col_1913 input").click()
-        self._one('.el-select-dropdown__item[title="赠品补发"]').click()
+        self._click_once(self._field("#col_1913 input"))
+        self._click_once(self._one('.el-select-dropdown__item[title="赠品补发"]'))
         self._wait(lambda _: self._value("#col_1913 input") == "赠品补发", "班牛问题类型未生效，未继续填写")
         for index, (gift_id, gift_name) in enumerate(zip(request.gift_ids, request.gift_names), 1):
             self._add_gift(gift_id, gift_name, request.gift_ids[:index], request.gift_names[:index])
@@ -268,9 +436,13 @@ class BanniuPage:
         # 持久化防重由外层队列负责；这里再保护同一页面实例的重复调用。
         self._attempted.add(key)
         reader = BanniuReceiptReader(self)
+        stage = '查询提交前任务基线'
+        click_attempted = False
         try:
             previous_ids = {row['task_id'] for row in reader.query_tasks(request.order_no)}
+            stage = '填写登记表单'
             self.prepare(request, before)
+            stage = '核对登记表单'
             self._require_prepared_session()
             self._validate_prepared(request)
             button = self._one('button.el-button--primary', root=self._dialog(), text='提交')
@@ -278,14 +450,27 @@ class BanniuPage:
                 raise PlatformOperationError("班牛提交按钮不可用；未提交")
             self._require_prepared_session()
             submitted_at = datetime.now()
-            button.click()  # 唯一提交点；异常、超时也绝不重试。
+            stage = '点击提交或读取回执'
+            click_attempted = True
+            self._click_once(button)  # 唯一提交点；异常、超时也绝不重试。
             self._wait(lambda _: not self._visible(self.driver, '.w-edit-task-dialog'),
                        "班牛提交后表单未关闭，结果不确定，请人工核查；禁止再次提交")
+            self._forget_form()
             return reader.wait_for_receipt(request, before, previous_ids, submitted_at)
-        except (PlatformOperationError, WebDriverException):
+        except (PlatformOperationError, WebDriverException) as exc:
+            cleanup = self._discard_unsubmitted_form(request) if not click_attempted else 'none'
             # 允许恢复登录供人工核查；整个 submit 不重调，按钮也绝不重点击。
             if self.authenticate is not None and self.authenticate():
-                raise PlatformOperationError("班牛会话已恢复，本次登记仍需人工核查；禁止再次提交") from None
+                error = PlatformOperationError if click_attempted else RegistrationNotSubmittedError
+                raise error("班牛会话已恢复，本次登记仍需人工核查；禁止再次提交") from None
+            if not click_attempted:
+                detail = (str(exc) if isinstance(exc, PlatformOperationError)
+                          else f'班牛{stage}失败（{type(exc).__name__}），未触发提交按钮')
+                detail += {'closed': '；已关闭本次未提交表单', 'preserved': '；表单归属或内容无法安全确认，已保留，请人工处理', 'none': ''}[cleanup]
+                raise RegistrationNotSubmittedError(detail) from None
+            if isinstance(exc, WebDriverException):
+                outcome = '结果可能不确定，请人工核查' if click_attempted else '未触发提交按钮'
+                raise PlatformOperationError(f'班牛{stage}失败（{type(exc).__name__}），{outcome}；禁止再次提交') from None
             raise
 
     def _require_prepared_session(self):

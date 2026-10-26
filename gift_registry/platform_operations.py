@@ -24,6 +24,8 @@ class SeleniumOperations:
         self.sleep = sleep
         self._query_page = None
         self._form_page = None
+        self._query_driver = None
+        self._form_driver = None
 
     def prepare_start(self):
         """任务落盘前预留共享登录配置；不查询平台、不打开浏览器。"""
@@ -34,28 +36,30 @@ class SeleniumOperations:
         return self.browsers.release_unused_reservation()
 
     def _jushuitan(self):
-        if self._query_page is None:
-            driver = self.browsers.driver("jushuitan")
+        driver = self.browsers.driver("jushuitan")
+        if self._query_page is None or self._query_driver is not driver:
             if self.query_factory is JushuitanPage:
                 self._query_page = self.query_factory(
                     driver, authenticate=self.browsers.get("jushuitan").ensure_authenticated)
             else:
                 self._query_page = self.query_factory(driver)
+            self._query_driver = driver
         return self._query_page
 
     def _banniu(self):
-        if self._form_page is None:
+        driver = self.browsers.driver("banniu")
+        if self._form_page is None or self._form_driver is not driver:
             factory = self.form_factory
             if factory is None:
                 from .banniu_page import BanniuPage
                 factory = BanniuPage
-            driver = self.browsers.driver("banniu")
             from .banniu_page import BanniuPage
             if factory is BanniuPage:
                 self._form_page = factory(
                     driver, authenticate=self.browsers.get("banniu").ensure_authenticated)
             else:
                 self._form_page = factory(driver)
+            self._form_driver = driver
         return self._form_page
 
     def query_order(self, order_no):

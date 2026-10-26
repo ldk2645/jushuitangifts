@@ -142,18 +142,22 @@ class FakeDriver:
         self.switch_to = SimpleNamespace(default_content=lambda: None, frame=lambda _: None,
                                          parent_frame=lambda: None)
         self.urls = []
+        self.current_url = "about:blank"
         self.scripts = []
         self.grid_states = []
         self.grid_reads = 0
 
     def get(self, url):
         self.urls.append(url)
+        self.current_url = url
 
     def find_element(self, by, value):
         return self.elements[value]
 
     def execute_script(self, script, *args):
         self.scripts.append(script)
+        if "gift-order-page-ready" in script:
+            return True
         if "gift-query-observer-install" in script:
             self.events.append(("observer", "install"))
             return True

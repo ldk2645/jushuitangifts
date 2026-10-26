@@ -10,6 +10,10 @@ class PlatformOperationError(RuntimeError):
     """可直接展示的固定业务错误；禁止传入页面原文、凭据或 Selenium 异常原文。"""
 
 
+class RegistrationNotSubmittedError(PlatformOperationError):
+    """适配器确认尚未进入提交按钮动作；仍保留已派发标记，禁止重试。"""
+
+
 @dataclass(frozen=True)
 class Recipient:
     name: str
@@ -199,5 +203,7 @@ class Workflow:
         except Exception as exc:
             label = {"querying": "聚水潭首次查询失败，未进行班牛登记", "submitting": "班牛提交异常，结果可能不确定，请人工核查",
                      "verifying": "聚水潭复查失败，未能确认新增信息"}[stage]
+            if stage == 'submitting' and isinstance(exc, RegistrationNotSubmittedError):
+                label = '班牛登记未提交'
             reason = str(exc) if isinstance(exc, PlatformOperationError) else type(exc).__name__
             report("failed", detail=f"{label}（{reason}）；不会自动重试登记")

@@ -18,6 +18,13 @@ ORDER_URL = "https://dopre.jushuitan.com/app/order/order/list.aspx"
 _PAGER = re.compile(r"总共\s*(\d+)\s*页\s*(\d+)\s*条记录")
 _MASK = re.compile(r"[*＊●•]|\.{3}|…")
 
+_ORDER_PAGE_READY = """
+// gift-order-page-ready: rendered page markers only; never reuse query results.
+const visible=e=>e.getClientRects().length && getComputedStyle(e).visibility!=='hidden';
+return [...document.querySelectorAll('#_jt_body')].filter(visible).length===1 &&
+       [...document.querySelectorAll('iframe#s_filter_frame')].filter(visible).length===1;
+"""
+
 
 def page_count(text):
     match = _PAGER.search(text or "")
@@ -183,7 +190,10 @@ class JushuitanPage:
 
     def _query(self, order_no):
         self.driver.switch_to.default_content()
-        self.driver.get(ORDER_URL)
+        # 同一浏览器内复用已就绪的订单页；下面仍逐次输入、回车并确认新刷新。
+        if (self.driver.current_url != ORDER_URL
+                or self.driver.execute_script(_ORDER_PAGE_READY) is not True):
+            self.driver.get(ORDER_URL)
         if self.authenticate is not None:
             self.authenticate(target_url=ORDER_URL)
         self._wait(EC.presence_of_element_located((By.ID, "_jt_body")),

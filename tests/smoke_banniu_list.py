@@ -54,6 +54,10 @@ def main():
         ("hidden-empty-message", table(empty=True, message=EMPTY_TEXT, message_style="display:none"), None),
         ("empty-while-loading", explicit_empty + '<div class="el-loading-mask">加载中</div>', None),
         ("normal-while-loading", normal + '<div class="el-loading-mask">加载中</div>', None),
+        ("normal-after-loading-fade", normal + '<div class="el-loading-mask" style="opacity:0">加载结束</div>', {"pager": "共 1 条", "rows": [ROW]}),
+        ("list-behind-detail", normal + '<div class="task-details">合成详情</div>', None),
+        ("list-behind-backdrop", normal + '<div class="worksheet-main-details-back">合成遮罩</div>', None),
+        ("list-behind-form", normal + '<div class="w-edit-task-dialog">合成表单</div>', None),
         ("multiple-visible-tables", explicit_empty + table(empty=True, message=EMPTY_TEXT), None),
         ("hidden-other-table", explicit_empty + table(rows=(ROW,), table_style="display:none"), empty_result),
     ]

@@ -1,5 +1,8 @@
 import tempfile
 import unittest
+from unittest.mock import Mock, PropertyMock, patch
+from selenium.webdriver.remote.webdriver import WebDriver
+from selenium.common.exceptions import InvalidSessionIdException, WebDriverException
 from pathlib import Path
 
 from gift_registry.browser import SiteBrowser
@@ -140,6 +143,49 @@ class ProfileLockTests(unittest.TestCase):
 
 
 class BusinessBrowsersTests(unittest.TestCase):
+    def test_closed_session_replaced_once_while_profile_lock_stays_owned(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            manager, created = self.make_controlled_manager(folder)
+            original = manager.get('jushuitan')
+            original.driver = Mock(spec=WebDriver)
+            type(original.driver).window_handles = PropertyMock(side_effect=InvalidSessionIdException('private'))
+            with patch('gift_registry.business_browser.configure_transport', return_value=None):
+                replacement = manager.get('jushuitan')
+            self.assertIsNot(original, replacement)
+            self.assertEqual(original.closes, 1)
+            self.assertEqual(len(created), 2)
+            self.assertIs(manager.get('jushuitan'), replacement)
+            self.assertEqual(manager.lock.releases, 0)
+            manager.close()
+
+    def test_uncertain_connection_does_not_replace_browser_or_release_lock(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            manager, created = self.make_controlled_manager(folder)
+            original = manager.get('jushuitan')
+            original.driver = Mock(spec=WebDriver)
+            type(original.driver).window_handles = PropertyMock(side_effect=WebDriverException('private'))
+            with patch('gift_registry.business_browser.configure_transport', return_value=None):
+                with self.assertRaisesRegex(PlatformOperationError, '无法确认窗口状态'):
+                    manager.get('jushuitan')
+            self.assertEqual(len(created), 1)
+            self.assertEqual(original.closes, 0)
+            self.assertEqual(manager.lock.releases, 0)
+            manager.close()
+
+    def test_closed_session_cleanup_failure_prevents_reopening(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            manager, created = self.make_controlled_manager(folder, fail_close=True)
+            original = manager.get('jushuitan')
+            original.driver = Mock(spec=WebDriver, window_handles=[])
+            with patch('gift_registry.business_browser.configure_transport', return_value=None):
+                with self.assertRaisesRegex(PlatformOperationError, '清理未完成'):
+                    manager.get('jushuitan')
+            self.assertEqual(len(created), 1)
+            self.assertIn('jushuitan', manager._pending_cleanup)
+            self.assertEqual(manager.lock.releases, 0)
+            original.fail_close = False
+            manager.close()
+
     def make_controlled_manager(self, folder, *, fail_open=False, fail_close=False):
         created = []
 

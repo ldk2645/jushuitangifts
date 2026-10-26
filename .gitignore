@@ -7,6 +7,7 @@ __pycache__/
 .pytest_cache/
 config/accounts.local.json
 config/accounts.local.json.tmp
+config/*.local.json*
 
 # Local credentials, encrypted snapshots and development output.
 config/accounts*.local.json*
@@ -30,4 +31,5 @@ build/
 /docs/*
 !/docs/business-workflow.md
 !/docs/automatic-login.md
+!/docs/lan.md
 !/docs/releases/
