@@ -58,6 +58,24 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(events[-1]["state"], "failed")
                 self.assertEqual(operations.submissions, [])
 
+    def test_retry_check_failure_has_its_own_stage_and_never_submits(self):
+        for error in (PlatformOperationError('班牛任务列表未就绪'), RuntimeError('private detail')):
+            with self.subTest(error=type(error).__name__):
+                operations, events = FakeOperations(), []
+
+                def check(request, before):
+                    raise error
+
+                Workflow(operations).execute(sample(), load_gifts(),
+                    lambda state, **updates: events.append({'state': state, **updates}), before_submit=check)
+                self.assertEqual(operations.trace, [('query', '00009')])
+                self.assertEqual(events[-1]['state'], 'failed')
+                self.assertIn('失败订单重登安全核查未通过', events[-1]['detail'])
+                self.assertNotIn('聚水潭首次查询失败', events[-1]['detail'])
+                self.assertNotIn('private detail', events[-1]['detail'])
+                self.assertEqual(events[-1]['submission_status'], 'not_submitted')
+                self.assertFalse(any(event.get('submit_attempted') for event in events))
+
     def test_hidden_address_is_not_sent_to_the_business_adapter(self):
         request = request_from_row({**sample(), "change_address": False}, load_gifts())
         self.assertIsNone(request.recipient)

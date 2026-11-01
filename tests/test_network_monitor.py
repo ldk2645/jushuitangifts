@@ -9,7 +9,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from gift_registry.network import NetworkSettings
-from gift_registry.network_monitor import NetworkMonitor, normalize_connections, probe_network
+from gift_registry.network_monitor import (NetworkMonitor, NetworkProbeError, PROBE_TIMEOUT_SECONDS,
+                                          normalize_connections, probe_network)
 
 SETTINGS = NetworkSettings(True, '192.168.1.91', '192.168.1.0/24', 'gift.example.test')
 
@@ -19,6 +20,20 @@ def connection(ip='192.168.1.91', *, name='test-wifi', adapter='physical-one', g
 
 
 class NetworkMonitorTests(unittest.TestCase):
+    def test_ip_only_changes_never_request_cloudflare_or_wrong_port(self):
+        monitor = NetworkMonitor(NetworkSettings(True, '192.168.1.91', '192.168.1.0/24'),
+                                 path=self.path, probe=lambda: self.connections, notify=None)
+        monitor.check()
+        self.connections = [connection(name='new-network')]
+        monitor.check()
+        self.assertEqual(monitor.snapshot()['state'], 'changed')
+        self.assertNotIn('Cloudflare', monitor.snapshot()['message'])
+        self.connections = [connection('192.168.1.92')]
+        monitor.check()
+        self.assertIn('192.168.1.92', monitor.snapshot()['message'])
+        self.assertNotIn('8765', monitor.snapshot()['message'])
+        self.assertNotIn('Cloudflare', monitor.snapshot()['message'])
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(dir=Path(__file__).parent)
         self.addCleanup(self.directory.cleanup)
@@ -151,9 +166,33 @@ class NetworkMonitorTests(unittest.TestCase):
         result = subprocess.CompletedProcess([], 0, stdout=json.dumps(data), stderr='')
         with patch('gift_registry.network_monitor.subprocess.run', return_value=result) as run:
             self.assertEqual(probe_network()[0]['ip'], SETTINGS.lan_ip)
-        self.assertEqual(run.call_args.kwargs['timeout'], 12)
+        self.assertEqual(run.call_args.kwargs['timeout'], PROBE_TIMEOUT_SECONDS)
+        self.assertEqual(PROBE_TIMEOUT_SECONDS, 25)
         self.assertIn('HardwareInterface', run.call_args.args[0][-1])
+        self.assertNotIn('Get-NetIPConfiguration', run.call_args.args[0][-1])
         self.assertEqual(len(normalize_connections(data)), 1)
+
+    def test_probe_timeout_has_actionable_message_without_raw_command(self):
+        error = subprocess.TimeoutExpired(['private-command'], PROBE_TIMEOUT_SECONDS, output='private-output')
+        with patch('gift_registry.network_monitor.subprocess.run', side_effect=error):
+            with self.assertRaisesRegex(NetworkProbeError, '网络检测超时.*25 秒') as caught:
+                probe_network()
+        self.assertNotIn('private-', str(caught.exception))
+
+    def test_failed_query_and_invalid_output_never_return_a_partial_network(self):
+        outcomes = [subprocess.CalledProcessError(1, ['private-command'], stderr='private-output'),
+                    subprocess.CompletedProcess([], 0, stdout='not-json', stderr=''),
+                    subprocess.CompletedProcess([], 0, stdout='[{"ip":"192.168.1.2"}]', stderr='')]
+        for outcome in outcomes:
+            with self.subTest(outcome=type(outcome).__name__):
+                with patch('gift_registry.network_monitor.subprocess.run') as run:
+                    if isinstance(outcome, Exception):
+                        run.side_effect = outcome
+                    else:
+                        run.return_value = outcome
+                    with self.assertRaises(NetworkProbeError) as caught:
+                        probe_network()
+                    self.assertNotIn('private-', str(caught.exception))
 
 
 if __name__ == '__main__':

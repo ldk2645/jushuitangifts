@@ -90,3 +90,147 @@ body{background:linear-gradient(140deg,#f3f8f4 0%,#f7f9f8 48%,#f4f7f5 100%)}.app
 .network-notice strong{font-size:13px}.network-notice p{margin:6px 0 0;font-size:12px;line-height:1.8;overflow-wrap:anywhere}
 .network-notice-actions{display:flex;flex-shrink:0;gap:8px}.network-notice a{text-decoration:none;white-space:nowrap}
 @media(max-width:760px){.network-notice{align-items:flex-start;flex-direction:column;gap:10px}.network-notice-actions{flex-wrap:wrap}}
+/* 主机管理入口与失败登记历史。 */
+.host-actions { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin: 12px 0; flex-wrap: wrap; }
+.host-actions[hidden] { display: none; }
+.host-actions > span { color: #69837b; font-size: 12px; }
+.retry-dialog { width: min(850px, 92vw); max-height: 85vh; border: 1px solid #dce6e0; border-radius: 16px; padding: 24px; color: #26443b; }
+.retry-dialog::backdrop { background: #14372c66; }
+.retry-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.retry-heading h2 { margin: 0; font-size: 22px; }
+.retry-dialog p { line-height: 1.6; overflow-wrap: anywhere; }
+.retry-card { border: 1px solid #e0e8e3; border-radius: 10px; padding: 16px; margin: 12px 0; }
+.retry-card p { margin: 6px 0; }
+.retry-note { color: #806c50; font-size: 13px; }
+.retry-card button { margin-top: 8px; }
+
+/* 表格主视图、全屏工作区与重复订单提示。 */
+.page-heading{gap:20px}
+.overview-metrics{gap:10px}
+.overview-metrics>div{min-width:88px;padding:10px 13px;background:#ffffffb8;border:1px solid #e2ebe5;border-radius:9px}
+.sheet{border-radius:12px;box-shadow:0 6px 28px #254d3410}
+.sheet-caption{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:13px 17px;background:#fff;border-bottom:1px solid #e6ede8;flex-shrink:0}
+.sheet-caption-title{display:flex;align-items:center;gap:10px;min-width:0}
+.sheet-caption-icon{display:grid;place-items:center;width:32px;height:32px;border-radius:8px;color:#42805b;background:#edf5ef;flex-shrink:0}
+.sheet-caption-icon svg{width:17px;height:17px}
+.sheet-caption h2{margin:0 0 4px;font-size:13px;font-weight:600;color:#355d45}
+.sheet-caption-title>div>span{font-size:10px;color:#9aac9f}
+.sheet-caption-actions{display:flex;align-items:center;justify-content:flex-end;gap:12px;min-width:0}
+.fullscreen-button{background:#f8fbf9;border-color:#dce8df;color:#4d775d;font-size:11px;flex-shrink:0}
+.fullscreen-button[aria-pressed=true]{background:#eaf4ed;border-color:#c4ddcd;color:#246344}
+.duplicate-summary{border:1px solid #f0d6d9;background:#fff2f3;color:#b14a56;font-size:10px;line-height:1.6;border-radius:5px;padding:4px 8px;white-space:nowrap}
+#registry-grid tbody tr[data-id]>td.duplicate-order{background:#fff1f2}
+#registry-grid td.duplicate-order .order-input{color:#bc3547;font-weight:600;background:transparent}
+.sheet-save-state{display:none;min-width:0;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#73927e;font-size:10px}
+.sheet-save-state:before{content:"";display:inline-block;width:5px;height:5px;margin-right:6px;border-radius:50%;background:#68a784;vertical-align:middle}
+.sheet-save-state.saving:before{background:#c5a05a}
+.sheet-save-state.error{color:#b65660}
+.sheet-save-state.error:before{background:#c96370}
+body.sheet-expanded{overflow:hidden;background:#f1f6f3}
+.sheet-expanded .app-header,.sheet-expanded .page-heading,.sheet-expanded .workflow-overview,.sheet-expanded .host-actions{display:none!important}
+.sheet-expanded .workspace{height:100dvh;min-height:0;padding:12px 16px 0}
+.sheet-expanded .sheet{min-height:0;flex:1}
+.sheet-expanded .grid-scroll{min-height:0}
+.sheet-expanded .sheet-save-state{display:inline-block}
+.sheet-expanded .sheet-caption{padding:11px 16px}
+.sheet-expanded .workspace-footer{height:36px}
+.sheet-expanded .network-notice{margin:0 0 10px;padding:9px 13px}
+.sheet-expanded .toolbar{padding-top:11px;padding-bottom:11px}
+.sheet-expanded .toolbar-actions{flex:1;min-width:0}
+.sheet-expanded .toolbar-right{flex-shrink:0}
+@media(max-width:760px){
+  .overview-metrics>div{min-width:54px;padding:8px 9px;border-radius:7px}
+  .sheet-caption{padding:11px 12px;gap:10px;flex-wrap:wrap}
+  .sheet-caption-actions{gap:8px;margin-left:auto;flex-wrap:wrap}
+  .sheet-caption-title>div>span{font-size:9px}
+  .duplicate-summary{font-size:9px;padding:3px 6px}
+  .sheet-expanded .workspace{padding:6px 6px 0}
+  .sheet-expanded .sheet-caption{padding:10px 11px}
+  .sheet-expanded .sheet-save-state{max-width:160px;font-size:9px}
+}
+
+/* 概况放入表格滚动区：默认折叠，展开后随内容滚走。 */
+.workspace{padding-top:18px}
+.workspace>.network-notice{margin:0 0 12px}
+.workspace-overview{position:static;border-bottom:1px solid #e1ebe4;background:#fbfdfb;min-width:0}
+.overview-toggle{display:flex;align-items:center;gap:14px;list-style:none;padding:12px 16px;color:#637e6c;cursor:pointer;user-select:none;outline-offset:-3px}
+.overview-toggle::-webkit-details-marker{display:none}
+.overview-toggle:hover{background:#f1f7f3}
+.overview-toggle:focus-visible{outline:2px solid #6c9f7d}
+.overview-toggle-title{display:flex;align-items:center;gap:8px;white-space:nowrap;font-size:11px;font-weight:600;color:#547960}
+.overview-chevron{width:13px;height:13px;transition:transform .15s}
+.workspace-overview[open] .overview-chevron{transform:rotate(90deg)}
+.overview-toggle-description{font-size:10px;color:#a1b0a5}
+.overview-toggle-label{margin-left:auto;font-size:10px;color:#839c8a;white-space:nowrap}
+.overview-content{padding-bottom:4px}
+.workspace-overview .page-heading{position:static;padding:20px 18px 17px}
+.workspace-overview .workflow-overview{position:static;margin:0 18px 12px;background:#fff}
+.workspace-overview .host-actions{position:static;margin:0;padding:3px 18px 13px}
+.sheet-save-state{display:inline-block}
+.sheet-expanded .workspace-overview{display:none}
+@media(max-width:760px){
+  .workspace{padding-top:12px}
+  .overview-toggle{padding:11px 12px;gap:10px}
+  .overview-toggle-description{display:none}
+  .workspace-overview .page-heading{padding:16px 12px 14px;gap:12px}
+  .workspace-overview .workflow-overview{margin:0 12px 12px}
+  .workspace-overview .host-actions{padding:0 12px 12px;justify-content:flex-start}
+  .sheet-save-state{max-width:150px;font-size:9px}
+}
+.gift-group-controls { display:flex; align-items:center; gap:8px; padding:0 16px 10px; font-size:12px; }
+.gift-group-controls select { flex:1; min-width:0; border:1px solid #dce6e0; border-radius:5px; padding:7px; color:#365d4e; background:#f8fbf9; }
+.gift-group-controls button { border:0; background:none; color:#16805c; }
+#status-filter { max-width:100%; width:96px; border:1px solid #c9ded3; border-radius:5px; padding:3px; font-size:11px; background:#fff; color:#426857; margin:3px 0; }
+.groups-dialog { width:min(860px,94vw); max-height:90vh; padding:22px; border:1px solid #dce6e0; border-radius:14px; color:#26443b; }
+.groups-dialog::backdrop { background:#14372c66; }
+.groups-dialog p,.maintenance-summary { line-height:1.6; }
+#group-error:empty { display:none; }
+.group-create,.group-search { display:flex; gap:8px; margin:12px 0; flex-wrap:wrap; }
+.group-create input,.group-search input,.group-search select { border:1px solid #dce6e0; border-radius:5px; padding:8px; max-width:100%; min-width:0; }
+.group-search input { flex:1; }
+.group-gift-list { max-height:34vh; overflow:auto; border:1px solid #e1ebe4; border-radius:8px; }
+.group-gift-row { display:flex; align-items:center; gap:12px; padding:9px 12px; border-bottom:1px solid #eef3ef; }
+.group-gift-row small { display:block; color:#6f8d7c; overflow-wrap:anywhere; }
+#group-targets { border:1px solid #dce6e0; border-radius:8px; margin:12px 0; display:flex; flex-wrap:wrap; gap:14px; }
+#group-targets label { display:flex; gap:5px; align-items:center; }
+.maintenance-summary { font-size:12px; color:#648475; overflow-wrap:anywhere; margin:8px 0; }
+:is(.status-badge.manual_success, .status-badge.manual_failed, .status-badge.manual_pending) { color: #704e12; background: #fff1d4; border: 1px dashed #aa802d; }
+#manual-status { padding: 8px; margin: 12px; max-width: 100%; }
+#retry-batch-result { white-space: normal; overflow-wrap: anywhere; }
+
+/* Compact host retry actions */
+.row-status-actions{display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+.row-retry{border:1px solid #d9e6df;border-radius:6px;background:#fff;color:#237052;font:inherit;font-size:11px;padding:4px 7px;cursor:pointer}
+.row-retry:hover,.retry-toolbar:hover{background:#edf7f0;border-color:#80b599}
+.row-retry:focus-visible{outline:2px solid #328561;outline-offset:2px}
+.row-retry:disabled{opacity:.45;cursor:wait}
+.status-badge.cancelled{color:#718079;background:#edf1ee}
+.status-badge.cancelled:before{background:#9aa79f}
+.row-cancel{color:#68776e;border-color:#dce4df}
+.group-assignment{display:flex;align-items:center;gap:12px;margin:14px 0;color:#637b6c;font-size:13px}
+.group-assignment select{max-width:100%;padding:9px 12px;border:1px solid #d7e4dc;border-radius:6px;background:#f8fbf9;color:#275e45;font:inherit}
+.retry-toolbar{color:#226b50;border-color:#bcd6c8;background:#f6fbf8}
+.retry-card{background:#fbfdfc;border-color:#dde9e1;box-shadow:0 2px 8px #184d3010}
+.retry-card strong{font-family:Consolas,monospace;font-size:16px}
+.retry-dialog{box-shadow:0 20px 70px #123e3030}
+
+/* Consistent host controls and current-sheet retry review */
+#retry-dialog{padding:0;width:min(900px,94vw);background:#f5f9f6}
+#retry-dialog>.retry-heading{position:sticky;top:0;z-index:1;padding:22px 26px;background:#fff;border-bottom:1px solid #dfebe3}
+#retry-dialog>.retry-heading h2{font-size:20px;color:#21583f}
+#retry-dialog>p,#retry-dialog>.retry-summary{margin:16px 26px}
+#retry-dialog>#retry-all{margin:0 26px}
+.retry-intro{color:#536c5c;font-size:13px}
+.retry-summary{padding:14px 18px;background:#e8f3ec;border:1px solid #d0e5d8;border-radius:10px;color:#296646;font-weight:600;font-size:13px}
+.retry-safety{font-size:12px;color:#7f7059}
+.retry-list{padding:0 26px 20px}
+.retry-card{background:#fff;padding:18px;border-radius:12px;border-left:3px solid #72a88b}
+.retry-card.retry-blocked{border-left-color:#cfb184}
+.retry-card-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.retry-card-heading strong{overflow-wrap:anywhere;min-width:0}
+.retry-card-heading button{flex-shrink:0;margin:0}
+.retry-card p{font-size:12px;color:#607367;line-height:1.7}
+.retry-card .retry-note{color:#8a7251}
+.toolbar-left{flex-wrap:wrap;row-gap:8px}
+#status-dialog select{padding:9px 12px;border:1px solid #cbded1;border-radius:6px;background:#f8fcf9;color:#265b40;margin:10px}
+@media(max-width:650px){.retry-card-heading{align-items:flex-start;flex-direction:column}.retry-list{padding:0 14px 14px}#retry-dialog>.retry-heading{padding:18px}#retry-dialog>p,#retry-dialog>.retry-summary{margin:14px}}

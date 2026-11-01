@@ -41,7 +41,7 @@ def close_login_browsers(browsers, publish):
             except Exception:
                 pending[key] = browsers[key]
                 publish(key, {"state": f"{name}：关闭未完成", "ready": False,
-                              "warning": "请手动关闭该平台的 Chrome 窗口，再点击“重试关闭浏览器”；登录配置仍受保护。"})
+                              "warning": "请手动关闭该平台的浏览器窗口，再点击“重试关闭浏览器”；登录配置仍受保护。"})
             else:
                 warning = "最后一次会话读取未完成，已保留之前的加密快照。" if result.get("warning") else ""
                 if result.get("forced"):

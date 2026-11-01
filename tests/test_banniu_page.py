@@ -2,9 +2,10 @@
 
 import unittest
 from datetime import datetime
+from itertools import chain, repeat
 from unittest.mock import Mock, patch
 
-from selenium.common.exceptions import ElementClickInterceptedException, TimeoutException
+from selenium.common.exceptions import ElementClickInterceptedException, StaleElementReferenceException, NoSuchWindowException, TimeoutException
 
 from gift_registry.banniu_page import BanniuPage, GIFT_COLUMNS, gifts_match, table_records
 from gift_registry.workflow import OrderSnapshot, PlatformOperationError, Recipient, RegistrationRequest, SubmissionReceipt
@@ -20,6 +21,44 @@ def gift(**updates):
 
 
 class BanniuPageTests(unittest.TestCase):
+    def test_requeried_names_keep_old_snapshot_compatibility_only_for_same_sku(self):
+        pairs = (
+            ('XS24ANA35002168001', 'K歌神器', '话筒音响一体无线麦克'),
+            ('N01B03070C1VZS7B01', '赠品保护套', '小米平板7/7 Pro 赠品保护套'),
+            ('N00A0A0I1I0DXM5D01', '胶囊雨伞（带胶囊盒）米白', '胶囊雨伞（带胶囊盒）'),
+            ('XS24A7A23002J0Y001', '智能手表', 'S20智能手表'),
+        )
+        for code, old, actual in pairs:
+            with self.subTest(code=code):
+                self.assertTrue(gifts_match([gift(商家编码=code, 货品名称=actual)], (code,), (old,)))
+                self.assertFalse(gifts_match([gift(商家编码=code, 货品名称=actual)], (SKU,), (old,)))
+                self.assertFalse(gifts_match([gift(商家编码=code, 货品名称=actual, 数量='2')], (code,), (old,)))
+
+    def test_only_order_loading_uses_longer_wait_and_enter_is_not_repeated(self):
+        page = BanniuPage(Mock())
+        for name in ('_click_once', '_one', '_dialog', '_track_form', '_choose_radio', '_set_text', '_send_keys'):
+            setattr(page, name, Mock())
+        page._value = Mock(return_value='')
+        page._wait = Mock(side_effect=PlatformOperationError('loading timed out'))
+        request = RegistrationRequest('001', (SKU,), (NAME,))
+        with self.assertRaisesRegex(PlatformOperationError, 'loading timed out'):
+            page._fill_prepared(request)
+        self.assertEqual(page._wait.call_args.kwargs['timeout'], 60)
+        page._send_keys.assert_called_once()
+        self.assertEqual(page.timeout, 20)
+
+    def test_text_input_relocates_after_clear_and_returns_current_field_for_enter(self):
+        page = BanniuPage(Mock())
+        old, empty, populated = Mock(), Mock(), Mock()
+        empty.get_attribute.return_value = ''
+        page._field = Mock(side_effect=[old, empty, populated])
+        page._value = Mock(return_value='0001')
+        self.assertIs(page._set_text('#synthetic input', '0001'), populated)
+        old.clear.assert_called_once()
+        old.send_keys.assert_not_called()
+        empty.send_keys.assert_called_once_with('0001')
+        empty.clear.assert_not_called()
+
     def test_maps_observed_headers_instead_of_fixed_column_numbers(self):
         headers = ["", "*退换补类型", "商家编码", "货品名称", "退换补商品金额", "数量", ""]
         values = [["", "补发", SKU, NAME, "0", "1", ""]]
@@ -42,7 +81,7 @@ class BanniuPageTests(unittest.TestCase):
                 self.assertFalse(gifts_match(records, (SKU,), (NAME,)))
 
     def search_page(self, search_records, selected):
-        page = BanniuPage(Mock(), timeout=.01)
+        page = BanniuPage(Mock(), timeout=.5)
         page.driver.execute_script.return_value = True
         page._close_search = Mock()
         page._value = Mock(return_value="商家编码")
@@ -90,11 +129,21 @@ class BanniuPageTests(unittest.TestCase):
         page, filter_button, rows = self.search_page([gift()], [gift()])
         page.timeout = 1
         stale = Mock()
-        page._table.side_effect = [([stale], [gift(商家编码="previous-sku")]), (rows, [gift()])]
+        page._table.side_effect = chain([([stale], [gift(商家编码="previous-sku")])], repeat((rows, [gift()])))
         page._add_gift(SKU, NAME, (SKU,), (NAME,))
         filter_button.click.assert_called_once()
         stale.click.assert_not_called()
         rows[0].click.assert_called_once()
+
+    def test_gift_identity_is_rechecked_after_search_row_is_replaced(self):
+        page, filter_button, rows = self.search_page([gift()], [gift()])
+        replacement = Mock()
+        page._table.side_effect = chain([(rows, [gift()])], repeat(([replacement], [gift(商家编码="other-sku")])))
+        with self.assertRaises(PlatformOperationError):
+            page._add_gift(SKU, NAME, (SKU,), (NAME,))
+        filter_button.click.assert_called_once()
+        rows[0].click.assert_not_called()
+        replacement.click.assert_not_called()
 
     def test_clipped_table_values_are_read_from_one_dom_snapshot(self):
         driver = Mock()
@@ -143,6 +192,38 @@ class BanniuPageTests(unittest.TestCase):
         reader.wait_for_receipt.return_value = SubmissionReceipt(True, created_record_ids=("0002",))
         return page, button, reader
 
+    def test_secondary_auth_failure_preserves_proven_pre_submit_failure(self):
+        from gift_registry.authentication import AuthenticationRequired
+        from gift_registry.workflow import RegistrationNotSubmittedError
+        page, button, reader = self.submission_page()
+        page.prepare.side_effect = NoSuchWindowException('private browser payload')
+        page.authenticate = Mock(side_effect=AuthenticationRequired('safe auth warning'))
+        with patch('gift_registry.banniu_receipt.BanniuReceiptReader', return_value=reader):
+            with self.assertRaises(RegistrationNotSubmittedError) as error:
+                page.submit(RegistrationRequest('0009', (SKU,), (NAME,)), OrderSnapshot('0009', True))
+        self.assertIn('填写登记表单', str(error.exception))
+        self.assertIn('NoSuchWindowException', str(error.exception))
+        self.assertIn('未触发提交按钮', str(error.exception))
+        self.assertNotIn('private browser payload', str(error.exception))
+        button.click.assert_not_called()
+
+    def test_secondary_auth_failure_after_click_stays_uncertain_and_never_repeats(self):
+        from gift_registry.authentication import AuthenticationRequired
+        from gift_registry.workflow import RegistrationNotSubmittedError
+        page, button, reader = self.submission_page()
+        page.authenticate = Mock(side_effect=[False, False, AuthenticationRequired('safe auth warning')])
+        reader.wait_for_receipt.side_effect = NoSuchWindowException('private browser payload')
+        request = RegistrationRequest('0009', (SKU,), (NAME,))
+        with patch('gift_registry.banniu_receipt.BanniuReceiptReader', return_value=reader):
+            with self.assertRaises(PlatformOperationError) as error:
+                page.submit(request, OrderSnapshot('0009', True))
+            self.assertNotIsInstance(error.exception, RegistrationNotSubmittedError)
+            self.assertIn('结果可能不确定', str(error.exception))
+            self.assertNotIn('private browser payload', str(error.exception))
+            with self.assertRaisesRegex(PlatformOperationError, '禁止再次提交'):
+                page.submit(request, OrderSnapshot('0009', True))
+        button.click.assert_called_once()
+
     def test_all_gifts_are_prepared_and_submitted_once_then_receipt_is_read(self):
         page, button, reader = self.submission_page()
         request = RegistrationRequest("0009", (SKU, "000OTHER"), (NAME, "另一礼品"))
@@ -161,6 +242,48 @@ class BanniuPageTests(unittest.TestCase):
         page._validate_prepared.assert_called_once_with(request)
         button.click.assert_called_once()
         reader.wait_for_receipt.assert_called_once_with(request, before, {"0001"}, submitted_at)
+
+    def test_explicit_retry_rechecks_empty_task_baseline_before_opening_form(self):
+        from gift_registry.workflow import RegistrationNotSubmittedError
+        page, button, reader = self.submission_page()
+        request = RegistrationRequest("0009", (SKU,), (NAME,))
+        with patch("gift_registry.banniu_receipt.BanniuReceiptReader", return_value=reader):
+            with self.assertRaisesRegex(RegistrationNotSubmittedError, "出现了该订单任务"):
+                page.submit(request, OrderSnapshot("0009", True), require_empty_baseline=True)
+        page.prepare.assert_not_called()
+        button.click.assert_not_called()
+        reader.wait_for_receipt.assert_not_called()
+
+    def test_retry_checks_old_gift_sets_before_preparing_or_clicking(self):
+        from gift_registry.workflow import RegistrationNotSubmittedError
+        for allowed in (True, False):
+            with self.subTest(allowed=allowed):
+                page, button, reader = self.submission_page()
+                reader.check_distinct_gifts = Mock(return_value=allowed)
+                request = RegistrationRequest('0009', (SKU,), (NAME,))
+                with patch('gift_registry.banniu_receipt.BanniuReceiptReader', return_value=reader):
+                    if allowed:
+                        page.submit(request, OrderSnapshot('0009', True), require_distinct_gifts=True)
+                        button.click.assert_called_once()
+                    else:
+                        with self.assertRaises(RegistrationNotSubmittedError):
+                            page.submit(request, OrderSnapshot('0009', True), require_distinct_gifts=True)
+                        page.prepare.assert_not_called()
+                        button.click.assert_not_called()
+                reader.check_distinct_gifts.assert_called_once_with(request, reader.query_tasks.return_value)
+
+    def test_submit_observer_runs_only_after_native_click_returns(self):
+        for failing in (False, True):
+            page, button, reader = self.submission_page()
+            if failing:
+                button.click.side_effect = ElementClickInterceptedException("test")
+            observed = Mock(side_effect=lambda: self.assertEqual(button.click.call_count, 1))
+            with patch("gift_registry.banniu_receipt.BanniuReceiptReader", return_value=reader):
+                try:
+                    page.submit(RegistrationRequest("0009", (SKU,), (NAME,)), OrderSnapshot("0009", True), on_submitted=observed)
+                except PlatformOperationError:
+                    self.assertTrue(failing)
+            self.assertEqual(observed.call_count, 0 if failing else 1)
 
     def test_click_exception_dialog_timeout_and_receipt_timeout_never_retry(self):
         request = RegistrationRequest("0009", (SKU,), (NAME,))
@@ -253,6 +376,26 @@ class BanniuPageTests(unittest.TestCase):
         with self.assertRaisesRegex(PlatformOperationError, '遮罩覆盖'):
             page._click_once(element)
         element.click.assert_not_called()
+
+    def test_virtual_row_is_resolved_again_after_scroll_before_first_click(self):
+        driver, previous, current = Mock(), Mock(), Mock()
+        driver.execute_script.side_effect = [StaleElementReferenceException(), None, True]
+        resolve = Mock(side_effect=chain([previous], repeat(current)))
+        page = BanniuPage(driver, timeout=1)
+        page._click_once(previous, resolve=resolve)
+        previous.click.assert_not_called()
+        current.click.assert_called_once()
+        self.assertEqual(resolve.call_count, 3)
+
+    def test_resolved_native_click_error_is_never_retried(self):
+        driver, element = Mock(), Mock()
+        driver.execute_script.return_value = True
+        element.click.side_effect = StaleElementReferenceException()
+        resolve = Mock(return_value=element)
+        with self.assertRaises(StaleElementReferenceException):
+            BanniuPage(driver, timeout=1)._click_once(element, resolve=resolve)
+        element.click.assert_called_once()
+        self.assertEqual(resolve.call_count, 2)
 
     def test_changed_address_submission_stops_before_browser_or_receipt_query(self):
         page, button, reader = self.submission_page()

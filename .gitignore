@@ -22,9 +22,18 @@ dist/
 build/
 *.egg-info/
 
+# Portable distribution runtimes are local release assets, not source files.
+/runtime/
+/drivers/
+/chrome/
+/portable.json
+/portable-files.sha256.json
+
 # Unrelated desktop documents and screenshots stay on this computer.
 /*.png
 /*.xlsx
+/example/
+/jushuitan/
 
 # Internal development history contains real business identifiers.
 # Publish only the maintained usage, workflow and release documents.
@@ -32,4 +41,7 @@ build/
 !/docs/business-workflow.md
 !/docs/automatic-login.md
 !/docs/lan.md
+!/docs/portable-lan.md
+!/docs/portable-settings.md
+!/docs/catalog-name-review-*.md
 !/docs/releases/

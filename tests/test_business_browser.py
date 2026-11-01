@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, PropertyMock, patch
 from selenium.webdriver.remote.webdriver import WebDriver
-from selenium.common.exceptions import InvalidSessionIdException, WebDriverException
+from selenium.common.exceptions import InvalidSessionIdException, NoSuchWindowException, WebDriverException
 from pathlib import Path
 
 from gift_registry.browser import SiteBrowser
@@ -143,6 +143,30 @@ class ProfileLockTests(unittest.TestCase):
 
 
 class BusinessBrowsersTests(unittest.TestCase):
+    def test_closed_active_tab_recovers_only_surviving_tab_without_reopening(self):
+        driver = Mock(spec=WebDriver, window_handles=['remaining'])
+        type(driver).current_window_handle = PropertyMock(side_effect=NoSuchWindowException('private'))
+        with patch('gift_registry.business_browser.configure_transport', return_value=None):
+            self.assertFalse(BusinessBrowsers._session_closed(Mock(driver=driver)))
+        driver.switch_to.window.assert_called_once_with('remaining')
+        driver.get.assert_not_called()
+        driver.quit.assert_not_called()
+
+    def test_closed_active_tab_with_multiple_survivors_requires_manual_choice(self):
+        driver = Mock(spec=WebDriver, window_handles=['one', 'two'])
+        type(driver).current_window_handle = PropertyMock(side_effect=NoSuchWindowException('private'))
+        with patch('gift_registry.business_browser.configure_transport', return_value=None):
+            with self.assertRaisesRegex(PlatformOperationError, '多个窗口'):
+                BusinessBrowsers._session_closed(Mock(driver=driver))
+        driver.switch_to.window.assert_not_called()
+        driver.quit.assert_not_called()
+
+    def test_live_active_tab_is_not_changed(self):
+        driver = Mock(spec=WebDriver, window_handles=['one', 'two'], current_window_handle='two')
+        with patch('gift_registry.business_browser.configure_transport', return_value=None):
+            self.assertFalse(BusinessBrowsers._session_closed(Mock(driver=driver)))
+        driver.switch_to.window.assert_not_called()
+
     def test_closed_session_replaced_once_while_profile_lock_stays_owned(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
             manager, created = self.make_controlled_manager(folder)

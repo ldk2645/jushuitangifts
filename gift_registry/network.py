@@ -41,7 +41,7 @@ class NetworkSettings:
         if (not any(network.subnet_of(private) for private in _PRIVATE)
                 or address not in network or address in (network.network_address, network.broadcast_address)):
             raise ValueError('局域网服务只允许主机所在的私有 IPv4 子网')
-        if (self.domain != self.domain.lower() or len(self.domain) > 253
+        if self.domain and (self.domain != self.domain.lower() or len(self.domain) > 253
                 or len(self.domain.split('.')) < 2
                 or any(not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label)
                        for label in self.domain.split('.'))):
@@ -64,7 +64,9 @@ class NetworkSettings:
             return False
         hosts = {'127.0.0.1', 'localhost'}
         if self.enabled:
-            hosts.update((self.lan_ip, self.domain))
+            hosts.add(self.lan_ip)
+            if self.domain:
+                hosts.add(self.domain)
         authorities = {f'{host}:{port}' for host in hosts}
         if port == 80:
             authorities.update(hosts)
@@ -157,7 +159,8 @@ def show_lan_info(settings, port=8765):
     frame = ttk.Frame(window, padding=24)
     frame.pack(fill='both', expand=True)
     ttk.Label(frame, text='同一局域网中的设备可访问', font=('Microsoft YaHei UI', 15, 'bold')).pack(anchor='w')
-    ttk.Label(frame, text=f'域名：http://{settings.domain}:{port}/\n地址：http://{settings.lan_ip}:{port}/\n用户名：{ACCESS_USERNAME}',
+    domain_line = f'域名：http://{settings.domain}:{port}/\n' if settings.domain else ''
+    ttk.Label(frame, text=domain_line + f'地址：http://{settings.lan_ip}:{port}/\n用户名：{ACCESS_USERNAME}',
               font=('Microsoft YaHei UI', 11), justify='left').pack(anchor='w', pady=16)
     value = tk.StringVar(value=password)
     entry = ttk.Entry(frame, textvariable=value, show='●', state='readonly', width=38)

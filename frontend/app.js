@@ -13,9 +13,14 @@ const fields = {
 const addressFields = ["recipient_name", "phone", "address"];
 let rows = [], revision = 0, token = "", active = null, initialized = false;
 let version = 0, savedVersion = 0, saveTimer, saving = null, conflict = false, toastTimer;
+let stateEpoch = 0;
 let giftCatalog = [], rowStates = {}, pickerRowId = null, starting = false;
 let creatingGift = false, createGiftRowId = null, catalogRefreshing = null;
 let catalogEditable = false;
+let giftGroups = { revision: 0, groups: [], memberships: {} }, selectedGiftGroup = "", selectedStatus = "", displayedRows = [];
+let hostActionsAvailable = false, groupSelection = new Set(), groupsSaving = false;
+const statusOptions = { "": "全部状态", ready: "待登记", processing: "进行中", success: "成功", failed: "失败", cancelled: "已取消", manual_success: "人工标记成功", manual_failed: "人工标记失败", manual_pending: "人工待核查", skipped: "已跳过", incomplete: "待完善", empty: "空白", queued: "待接入" };
+function gridRows() { return displayedRows; }
 const recentGiftOrderLimit = 100;
 let pickerGiftUsage = null;
 let selection = null, editing = null, dragSelection = null, dragFrame = null, suppressCellClick = false;
@@ -55,7 +60,11 @@ function naturalColumnWidths() {
     const labels = [...names, ...(unmatched.length ? [`未匹配：${unmatched.join("、")}`] : [])];
     const giftsWidth = labels.reduce((total, label) => total + textWidth(label, chip, "11px sans-serif") + 16, 0) + Math.max(0, labels.length - 1) * 5;
     widths.gift = Math.max(widths.gift, giftsWidth + 58);
-    widths.status = Math.max(widths.status, textWidth(status(row).label, badge, "11px sans-serif") + 54);
+    const display = status(row), execution = rowStates[row.id];
+    const action = hostActionsAvailable && execution?.signature === rowSignature(row)
+      ? execution.state === "queued" ? "取消" : display.type === "failed" || display.type === "cancelled" && execution.retry_cancelled ? "↻ 重登" : "" : "";
+    const actionWidth = action ? textWidth(action, $("#grid-body .row-retry"), "11px sans-serif") + 24 : 0;
+    widths.status = Math.max(widths.status, textWidth(display.label, badge, "11px sans-serif") + 54 + actionWidth);
   }
   return Object.fromEntries(Object.entries(widths).map(([field, width]) => [field, Math.min(2400, Math.ceil(width))]));
 }
@@ -162,9 +171,10 @@ function giftScore(text, gift) {
 let giftMatcher = null;
 function matchingContext() {
   if (giftMatcher?.catalog === giftCatalog && giftMatcher.size === giftCatalog.length) return giftMatcher;
-  const exact = new Map(), entries = [], protectedLabels = [];
+  const exact = new Map(), codes = new Map(), entries = [], protectedLabels = [];
   let maxWords = 8;
   for (const gift of giftCatalog) {
+    codes.set(gift.id, gift.id);
     const labels = [gift.id, gift.name, ...(gift.aliases || [])];
     entries.push({ gift, labels: [...new Set(labels.map(normalizeGift).filter(Boolean))] });
     for (const label of labels) {
@@ -179,15 +189,16 @@ function matchingContext() {
     }
   }
   protectedLabels.sort((a, b) => b.label.length - a.label.length);
-  giftMatcher = { catalog: giftCatalog, size: giftCatalog.length, exact, entries, protectedLabels, maxWords, parts: new Map(), results: new Map() };
+  giftMatcher = { catalog: giftCatalog, size: giftCatalog.length, exact, codes, entries, protectedLabels, maxWords, parts: new Map(), results: new Map() };
   return giftMatcher;
 }
 function resolveGiftPart(text, strict = false) {
-  const context = matchingContext(), value = normalizeGift(text), key = `${strict ? "phrase" : "word"}:${value}`;
+  const context = matchingContext(), value = normalizeGift(text), key = `${strict ? "phrase" : "word"}:${text.trim()}`;
   if (context.parts.has(key)) return context.parts.get(key);
   const exact = context.exact.get(value);
   let result;
-  if (exact) result = { id: exact.size === 1 ? [...exact][0] : null, score: exact.size === 1 ? 1 : 0, exact: true };
+  if (context.codes.has(text.trim())) result = { id: context.codes.get(text.trim()), score: 1, exact: true };
+  else if (exact) result = { id: exact.size === 1 ? [...exact][0] : null, score: exact.size === 1 ? 1 : 0, exact: true };
   else {
     const matches = context.entries.map(({ gift, labels }) => {
       // 跨空格的短语必须整体相似，不能只因包含一个已知简称就吞掉其他礼品。
@@ -273,14 +284,22 @@ function matchGifts(text) {
 }
 function giftNames(ids) { return ids.map(id => giftCatalog.find(gift => gift.id === id)?.name).filter(Boolean); }
 function unresolvedGiftLabels(row) {
-  const unmatched = matchGifts(row.gift).unmatched;
-  return unmatched.length || !row.gift || row.gift === giftNames(row.gift_ids || []).join("、") ? unmatched : [row.gift];
+  const selected = giftNames(row.gift_ids || []).join("、");
+  if (row.gift === selected) return [];
+  // 已选编码是身份依据；同名 SKU 的展示名称不能再反向解析成未匹配项。
+  const remaining = selected && row.gift.startsWith(selected + "、") ? row.gift.slice(selected.length + 1) : row.gift;
+  const matched = matchGifts(remaining);
+  if (matched.ids.some(id => !(row.gift_ids || []).includes(id))) return [remaining];
+  const selectedLabels = new Set(giftCatalog.filter(gift => (row.gift_ids || []).includes(gift.id))
+    .flatMap(gift => [gift.id, gift.name, ...(gift.aliases || [])]).map(normalizeGift));
+  return matched.unmatched.filter(label => !selectedLabels.has(normalizeGift(label)));
 }
 function assignGifts(row, ids, unmatched = []) {
   row.gift_ids = [...new Set(ids)].filter(id => giftCatalog.some(gift => gift.id === id));
   row.gift = [...giftNames(row.gift_ids), ...unmatched].join("、");
 }
 function rowSignature(row) { return JSON.stringify([row.id, row.order_no, row.gift, row.gift_ids || [], row.change_address, row.recipient_name, row.phone, row.address]); }
+function taskIdentity(row) { return JSON.stringify([row.order_no.trim(), [...new Set(row.gift_ids || [])].sort()]); }
 function validGifts(row) { return row.gift_ids?.length && row.gift === giftNames(row.gift_ids).join("、") && row.gift_ids.every(id => giftCatalog.some(gift => gift.id === id)); }
 function columns() {
   return ["order_no", "gift", "change_address", "status"];
@@ -293,9 +312,13 @@ function status(row) {
   if (complete && rowStates[row.id]?.signature === rowSignature(row)) {
     const state = rowStates[row.id];
     const labels = { waiting_for_workflow: ["待接入流程", "queued"], queued: ["等待执行", "processing"], querying: ["查询订单", "processing"],
-      submitting: ["正在登记", "processing"], verifying: ["复查确认", "processing"], success: ["成功", "success"], failed: ["失败", "failed"] };
+      submitting: ["正在登记", "processing"], verifying: ["复查确认", "processing"], success: ["成功", "success"], failed: ["失败", "failed"], skipped: ["已跳过", "skipped"], cancelled: ["已取消", "cancelled"] };
     const [label, type] = labels[state.state] || ["等待执行", "processing"];
-    return { label, type, detail: state.detail || "" };
+    if (state.manual_status) return { label: statusOptions[`manual_${state.manual_status}`], type: `manual_${state.manual_status}`,
+      detail: `主机人工标记；自动核验结果：${label}。${state.detail || ""}。不改写自动核验日志；人工成功持续保留并排除重登。` };
+    const review = state.state === "failed" && state.review_due_at && !state.review_result
+      ? `；等待自动复核一次（${new Date(state.review_due_at).toLocaleTimeString("zh-CN", { hour12: false })} 到期，不重新提交）` : "";
+    return { label, type, detail: (state.detail || "") + review };
   }
   if (row.gift.trim() && !validGifts(row)) return { label: "待匹配礼品", type: "incomplete" };
   return complete ? { label: "待登记", type: "ready" } : { label: "待完善", type: "incomplete" };
@@ -310,6 +333,9 @@ function toast(message, error = false) {
 function saveIndicator(message, type = "") {
   $("#save-label").textContent = message;
   $("#save-indicator").className = `save-indicator ${type}`;
+  $("#sheet-save-state").textContent = message;
+  $("#sheet-save-state").className = `sheet-save-state ${type}`;
+  $("#sheet-save-state").title = message;
 }
 function remember() {
   history.push(structuredClone(rows));
@@ -320,17 +346,21 @@ function changed() {
   version++;
   $("#registry-grid").classList.remove("is-copied");
   updateSummary();
+  updateDuplicateOrders();
   scheduleColumnSizing();
   clearTimeout(saveTimer);
   saveIndicator(conflict ? "保存冲突，请保留内容并刷新" : "有未保存的修改", conflict ? "error" : "saving");
   if (!conflict) saveTimer = setTimeout(() => saveNow(), 650);
 }
 async function api(path, options = {}) {
+  const changesState = options.method === "POST" && (path.startsWith("/api/registrations/") || path.startsWith("/api/rows/"));
+  if (changesState) stateEpoch++;
   const response = await fetch(path, { ...options, headers: { "Content-Type": "application/json", "X-CSRF-Token": token, ...(options.headers || {}) } });
   let result;
   try { result = await response.json(); } catch { throw new Error("工作台连接中断，请确认程序正在运行"); }
+  if (changesState) stateEpoch++;
   if (!response.ok) {
-    if (response.status === 409 && !["registration_not_started", "gift_catalog_conflict"].includes(result.code)) conflict = true;
+    if (path === "/api/rows" && response.status === 409 && !["registration_not_started", "gift_catalog_conflict", "gift_group_conflict"].includes(result.code)) conflict = true;
     throw new Error(result.error || "请求失败，请重试");
   }
   return result;
@@ -368,13 +398,98 @@ async function saveNow(manual = false) {
 }
 
 function updateSummary() {
-  $("#row-summary").textContent = `共 ${rows.length} 行 · 已填写 ${rows.filter(filled).length} 条`;
+  $("#row-summary").textContent = `共 ${rows.length} 行 · 已填写 ${rows.filter(filled).length} 条${selectedStatus ? ` · 筛选显示 ${displayedRows.length} 行` : ""}`;
   const count = type => rows.filter(row => status(row).type === type).length;
-  $("#ready-summary").textContent = `待登记 ${count("ready")} · 进行中 ${count("processing")} · 成功 ${count("success")} · 失败 ${count("failed")}`;
+  const manualCount = rows.filter(row => status(row).type.startsWith("manual_")).length;
+  $("#ready-summary").textContent = `待登记 ${count("ready")} · 进行中 ${count("processing")} · 成功 ${count("success")} · 失败 ${count("failed")}${manualCount ? ` · 人工标记 ${manualCount}` : ""}`;
   $("#metric-ready").textContent = count("ready");
   $("#metric-success").textContent = count("success");
   $("#metric-failed").textContent = count("failed");
 }
+function updateDuplicateOrders() {
+  const orders = new Map();
+  rows.forEach((row, index) => {
+    const orderNo = row.order_no.trim();
+    if (!orderNo || !validGifts(row)) return;
+    const key = taskIdentity(row);
+    if (!orders.has(key)) orders.set(key, []);
+    orders.get(key).push(index + 2);
+  });
+  let groups = 0, repeatedRows = 0;
+  for (const positions of orders.values()) if (positions.length > 1) { groups++; repeatedRows += positions.length; }
+  for (const row of rows) {
+    const cell = rowElement(row.id)?.querySelector('td[data-field="order_no"]');
+    if (!cell) continue;
+    const positions = validGifts(row) ? orders.get(taskIdentity(row)) : null, duplicate = positions?.length > 1;
+    const input = cell.querySelector("input");
+    cell.classList.toggle("duplicate-order", Boolean(duplicate));
+    if (duplicate) {
+      const message = `订单号及礼品组合重复：第 ${positions.slice(0, 8).join("、")}${positions.length > 8 ? "…" : ""} 行，共 ${positions.length} 行`;
+      cell.title = message; input.title = message; input.setAttribute("aria-invalid", "true");
+      input.setAttribute("aria-describedby", "duplicate-summary"); cell.dataset.duplicateCount = positions.length;
+    } else {
+      cell.removeAttribute("title"); input.removeAttribute("title"); input.removeAttribute("aria-invalid");
+      input.removeAttribute("aria-describedby"); delete cell.dataset.duplicateCount;
+    }
+  }
+  const summary = $("#duplicate-summary"), text = `重复任务 ${groups} 组 · ${repeatedRows} 行`;
+  summary.hidden = groups === 0;
+  if (summary.textContent !== text) summary.textContent = text;
+  summary.title = "订单号与整组礼品编码相同才算重复，忽略礼品排列顺序；名称、分组不参与判定。红色订单号可悬停查看所在行。";
+}
+let sheetFullscreenOwned = false, sheetFullscreenChanging = false;
+function setSheetExpanded(expanded) {
+  document.body.classList.toggle("sheet-expanded", expanded);
+  $("#toggle-fullscreen").setAttribute("aria-pressed", String(expanded));
+  $("#fullscreen-label").textContent = expanded ? "退出全屏" : "全屏表格";
+  $("#toggle-fullscreen").title = expanded ? "退出表格全屏，可按 Esc 退出" : "全屏显示表格，可按 Esc 退出";
+  $("#fullscreen-icon").setAttribute("d", expanded ? "M3 7h4V3m6 0v4h4M7 17v-4H3m14 0h-4v4" : "M7 3H3v4m10-4h4v4M3 13v4h4m10-4v4h-4");
+  closeGiftPicker(); scheduleColumnSizing();
+}
+async function toggleSheetFullscreen() {
+  if (!initialized || sheetFullscreenChanging) return;
+  sheetFullscreenChanging = true; $("#toggle-fullscreen").disabled = true;
+  finishEditing();
+  try {
+    if (document.body.classList.contains("sheet-expanded")) {
+      if (sheetFullscreenOwned && document.fullscreenElement) {
+        try { await document.exitFullscreen(); } catch { /* 仍允许恢复普通布局。 */ }
+      }
+      sheetFullscreenOwned = false; setSheetExpanded(false);
+    } else {
+      setSheetExpanded(true);
+      // 对根节点全屏，礼品选项、提示与新增弹窗也能正常显示。
+      if (!document.fullscreenElement && document.fullscreenEnabled && document.documentElement.requestFullscreen) {
+        sheetFullscreenOwned = true;
+        try { await document.documentElement.requestFullscreen(); }
+        catch { sheetFullscreenOwned = false; /* 浏览器未开放全屏时，保持铺满窗口。 */ }
+      }
+    }
+  } finally { sheetFullscreenChanging = false; $("#toggle-fullscreen").disabled = false; }
+}
+$("#toggle-fullscreen").addEventListener("click", toggleSheetFullscreen);
+const overviewStorageKey = "gift_registry.overview_open.v1";
+const overviewPanel = $("#workspace-overview");
+try { overviewPanel.open = localStorage.getItem(overviewStorageKey) === "true"; }
+catch { /* 无法保存偏好时仍可正常展开或折叠。 */ }
+function syncOverviewPanel() {
+  $("#overview-toggle").setAttribute("aria-expanded", String(overviewPanel.open));
+  $("#overview-toggle-label").textContent = overviewPanel.open ? "收起" : "展开";
+}
+syncOverviewPanel();
+overviewPanel.addEventListener("toggle", () => {
+  syncOverviewPanel(); closeGiftPicker(); scheduleColumnSizing();
+  try { localStorage.setItem(overviewStorageKey, String(overviewPanel.open)); } catch { /* 保留本次页面内的选择。 */ }
+});
+document.addEventListener("fullscreenchange", () => {
+  if (sheetFullscreenOwned && !document.fullscreenElement) { sheetFullscreenOwned = false; setSheetExpanded(false); }
+  scheduleColumnSizing();
+});
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && !event.defaultPrevented && !event.isComposing && !editing && !pickerRowId && !document.querySelector("dialog[open]") && document.body.classList.contains("sheet-expanded")) {
+    event.preventDefault(); toggleSheetFullscreen();
+  }
+});
 function closeGiftPicker() { pickerRowId = null; pickerGiftUsage = null; $("#gift-picker").hidden = true; document.querySelectorAll('.gift-trigger[aria-expanded="true"]').forEach(button => button.setAttribute("aria-expanded", "false")); }
 function recentGiftUsage() {
   const known = new Set(giftCatalog.map(gift => gift.id)), orders = new Map();
@@ -400,7 +515,7 @@ function renderGiftCell(cell, row, index) {
   button.title = row.gift || "选择或粘贴多个礼品，可用中文逗号、英文逗号、顿号或空格分隔，自动模糊匹配名称或别名";
   const chips = document.createElement("span"); chips.className = "gift-chips";
   const names = giftNames(row.gift_ids || []), unmatched = unresolvedGiftLabels(row);
-  for (const name of names) { const chip = document.createElement("span"); chip.className = "gift-chip"; chip.textContent = name; chips.append(chip); }
+  names.forEach((name, index) => { const chip = document.createElement("span"); chip.className = "gift-chip"; chip.textContent = name; chip.title = `${name}（${row.gift_ids[index]}）`; chips.append(chip); });
   if (unmatched.length) { const chip = document.createElement("span"); chip.className = "gift-chip unmatched-chip"; chip.textContent = `未匹配：${unmatched.join("、")}`; chips.append(chip); }
   if (!names.length && !unmatched.length) { const placeholder = document.createElement("span"); placeholder.className = "gift-placeholder"; placeholder.textContent = "选择礼品，可多选"; chips.append(placeholder); }
   const caret = document.createElement("span"); caret.className = "gift-caret"; caret.textContent = "⌄";
@@ -437,6 +552,12 @@ async function refreshGiftCatalog() {
   catalogRefreshing = (async () => {
     try {
       const result = await api("/api/gifts");
+      if (giftGroups.groups.length) {
+        const groups = await api("/api/gift-groups");
+        if (JSON.stringify(groups) !== JSON.stringify(giftGroups)) {
+          giftGroups = groups; renderGroupFilter(); if (pickerRowId) renderGiftOptions();
+        }
+      }
       if (JSON.stringify(result.gifts) !== JSON.stringify(giftCatalog)) {
         giftCatalog = result.gifts;
         if (pickerRowId) renderGiftOptions();
@@ -453,7 +574,7 @@ function renderGiftOptions() {
   const query = $("#gift-search").value.trim();
   const usage = pickerGiftUsage || recentGiftUsage();
   const candidates = giftCatalog.map((gift, index) => ({ gift, index, count: usage.counts.get(gift.id) || 0, score: query ? giftScore(query, gift) : 1 }))
-    .filter(item => item.score >= .45).sort((a, b) => b.score - a.score || b.count - a.count || a.index - b.index);
+    .filter(item => item.score >= .45 && inGiftGroup(item.gift.id, selectedGiftGroup)).sort((a, b) => b.score - a.score || b.count - a.count || a.index - b.index);
   $("#gift-sort-hint").textContent = usage.orderCount
     ? `${query ? "匹配优先 · " : ""}按近 ${usage.orderCount} 个订单的礼赠频率排序`
     : "暂无订单使用记录，按清单顺序显示";
@@ -466,7 +587,9 @@ function renderGiftOptions() {
     check.addEventListener("change", () => {
       remember();
       const ids = check.checked ? [...row.gift_ids, gift.id] : row.gift_ids.filter(id => id !== gift.id);
-      assignGifts(row, ids, matchGifts(row.gift).unmatched);
+      const unmatched = unresolvedGiftLabels(row).filter(label => !check.checked ||
+        ![gift.id, gift.name, ...(gift.aliases || [])].some(value => normalizeGift(value) === normalizeGift(label)));
+      assignGifts(row, ids, unmatched);
       updateGiftRow(row); renderGiftOptions();
     });
     const meta = document.createElement("span"); meta.className = "gift-option-meta"; meta.append(code);
@@ -526,7 +649,7 @@ $("#gift-create-form").addEventListener("submit", async event => {
     const row = $("#gift-create-select").checked && createGiftRowId ? rows.find(row => row.id === createGiftRowId) : null;
     if (row) {
       remember();
-      const match = matchGifts(row.gift);
+      const match = matchGifts(unresolvedGiftLabels(row).join("、"));
       assignGifts(row, [...row.gift_ids, ...match.ids, result.gift.id], match.unmatched); changed();
     }
     render(); $("#gift-create-dialog").close(); focusAfterGiftCreate(row?.id);
@@ -542,6 +665,27 @@ function statusNode(row) {
   node.className = state.type === "empty" ? "status-empty" : `status-badge ${state.type}`;
   node.textContent = state.label;
   node.title = state.detail || state.label;
+  const queued = rowStates[row.id]?.state === "queued" && rowStates[row.id]?.signature === rowSignature(row);
+  if (hostActionsAvailable && queued) {
+    const wrapper = document.createElement("span"), button = document.createElement("button");
+    wrapper.className = "row-status-actions";
+    button.type = "button"; button.className = "row-retry row-cancel"; button.textContent = "取消";
+    button.title = "仅取消尚未开始处理的排队任务";
+    button.setAttribute("aria-label", "取消此单排队"); button.disabled = hostManaging;
+    button.addEventListener("mousedown", event => event.stopPropagation());
+    button.addEventListener("click", event => { event.stopPropagation(); openCancellation([row.id]); });
+    wrapper.append(node, button); return wrapper;
+  }
+  if (hostActionsAvailable && (state.type === "failed" || state.type === "cancelled" && rowStates[row.id]?.retry_cancelled)) {
+    const wrapper = document.createElement("span"), button = document.createElement("button");
+    wrapper.className = "row-status-actions";
+    button.type = "button"; button.className = "row-retry"; button.textContent = "↻ 重登";
+    button.title = "按历史订单和礼品核查后重新登记";
+    button.setAttribute("aria-label", "重新登记此单"); button.disabled = retrySubmitting;
+    button.addEventListener("mousedown", event => event.stopPropagation());
+    button.addEventListener("click", event => { event.stopPropagation(); retryRow(row, button); });
+    wrapper.append(node, button); return wrapper;
+  }
   return node;
 }
 function addressDetail(row, index) {
@@ -578,6 +722,8 @@ function addressDetail(row, index) {
 function render() {
   finishEditing();
   closeGiftPicker();
+  displayedRows = rows.filter(row => !selectedStatus || status(row).type === selectedStatus);
+  const displayedIds = new Set(displayedRows.map(row => row.id));
   const visible = columns();
   $("#registry-grid").classList.toggle("address-mode", visible.length > 4);
   $("#grid-columns").replaceChildren();
@@ -613,12 +759,21 @@ function render() {
     label.textContent = fields[field].label;
     if (field === "change_address") heading.title = "空心圆点为否，实心圆点为是";
     heading.append(label);
+    if (field === "status") {
+      const filter = document.createElement("select"); filter.id = "status-filter"; filter.setAttribute("aria-label", "按状态筛选");
+      filter.title = "仅筛选显示；开始登记仍按完整草稿执行，并跳过已处理订单";
+      for (const [value, name] of Object.entries(statusOptions)) filter.add(new Option(name, value));
+      filter.value = selectedStatus;
+      filter.addEventListener("change", () => { selectedStatus = filter.value; active = null; selection = null; render(); });
+      heading.append(filter);
+    }
     heading.append(createColumnResizer(field));
     headings.append(heading);
   });
   $("#grid-head").replaceChildren(letters, headings);
   const body = document.createDocumentFragment();
   rows.forEach((row, index) => {
+    if (!displayedIds.has(row.id)) return;
     const tr = document.createElement("tr");
     tr.dataset.id = row.id;
     const number = document.createElement("th"), rowButton = document.createElement("button");
@@ -709,7 +864,8 @@ function render() {
   selectedNodes.clear();
   if (selection && !rangeBounds()) selection = null;
   updateSummary();
-  if (active && rows.some(row => row.id === active.id)) activate(active.id, visible.includes(active.field) || (addressFields.includes(active.field) && rows.find(row => row.id === active.id).change_address) ? active.field : "order_no");
+  updateDuplicateOrders();
+  if (active && displayedIds.has(active.id)) activate(active.id, visible.includes(active.field) || (addressFields.includes(active.field) && rows.find(row => row.id === active.id).change_address) ? active.field : "order_no");
   else {
     active = null;
     selection = null;
@@ -729,7 +885,7 @@ function fieldElement(id, field) {
 }
 function rangeBounds() {
   if (!selection) return null;
-  const start = rows.findIndex(row => row.id === selection.anchor.id), end = rows.findIndex(row => row.id === selection.focus.id);
+  const start = gridRows().findIndex(row => row.id === selection.anchor.id), end = gridRows().findIndex(row => row.id === selection.focus.id);
   const left = columns().indexOf(selection.anchor.field), right = columns().indexOf(selection.focus.field);
   if (Math.min(start, end, left, right) < 0) return null;
   return { top: Math.min(start, end), bottom: Math.max(start, end), left: Math.min(left, right), right: Math.max(left, right) };
@@ -748,7 +904,7 @@ function paintSelection() {
   const bounds = rangeBounds();
   if (bounds) {
     for (let row = bounds.top; row <= bounds.bottom; row++) {
-      const tr = rowElement(rows[row].id);
+      const tr = rowElement(gridRows()[row].id);
       tr.firstElementChild.classList.add("selected-gutter"); selectedNodes.add(tr.firstElementChild);
       for (let col = bounds.left; col <= bounds.right; col++) {
         const cell = tr.children[col + 1];
@@ -762,10 +918,10 @@ function paintSelection() {
     for (let col = bounds.left; col <= bounds.right; col++) {
       $("#grid-head").querySelector(`.letters [data-field="${columns()[col]}"]`)?.classList.add("active-column");
     }
-    const first = cellReference(bounds.top, bounds.left), last = cellReference(bounds.bottom, bounds.right);
+    const first = cellReference(rows.indexOf(gridRows()[bounds.top]), bounds.left), last = cellReference(rows.indexOf(gridRows()[bounds.bottom]), bounds.right);
     $("#cell-reference").textContent = first === last ? first : `${first}:${last}`;
     const height = bounds.bottom - bounds.top + 1, width = bounds.right - bounds.left + 1;
-    $("#selection-summary").textContent = height * width > 1 ? `已选 ${height} 行 × ${width} 列 · ${height * width} 个单元格` : `第 ${bounds.top + 2} 行 · ${fields[columns()[bounds.left]].label}`;
+    $("#selection-summary").textContent = height * width > 1 ? `已选 ${height} 行 × ${width} 列 · ${height * width} 个单元格` : `第 ${rows.indexOf(gridRows()[bounds.top]) + 2} 行 · ${fields[columns()[bounds.left]].label}`;
   } else {
     const index = rows.findIndex(row => row.id === active.id);
     $("#cell-reference").textContent = `${fields[active.field].label} ${index + 2}`;
@@ -840,6 +996,7 @@ function addRows(count = 1) {
   if (!Number.isInteger(count) || count < 1 || count > 10000) return toast("请输入 1 到 10000 之间的整数行数", true);
   if (rows.length + count > 10000) return toast(`最多支持 10000 行，当前还能新增 ${10000 - rows.length} 行`, true);
   remember();
+  selectedStatus = "";
   const added = Array.from({ length: count }, newRow);
   rows.push(...added);
   changed(); render(); focusCell(added[0].id, "order_no");
@@ -881,13 +1038,14 @@ function scrollWhileSelecting() {
   dragFrame = requestAnimationFrame(scrollWhileSelecting);
 }
 $("#registry-grid").addEventListener("pointerdown", event => {
-  if (!initialized || event.button !== 0 || event.target.closest(".column-resizer")) return;
+  if (!initialized || event.button !== 0 || event.target.closest(".column-resizer,select")) return;
   const header = event.target.closest("thead th");
   if (header) {
+    if (!gridRows().length) return;
     event.preventDefault(); closeGiftPicker();
     const field = header.dataset.field;
     const first = event.shiftKey && selection && field ? selection.anchor.field : field || "order_no";
-    selectRange({ id: rows[0].id, field: first }, { id: rows.at(-1).id, field: field || "status" });
+    selectRange({ id: gridRows()[0].id, field: first }, { id: gridRows().at(-1).id, field: field || "status" });
     focusCell(active.id, active.field, true); return;
   }
   const cell = event.target.closest('tr[data-id] td[data-field]');
@@ -926,16 +1084,18 @@ $("#registry-grid").addEventListener("dblclick", event => {
   if (cell) { event.preventDefault(); beginEditing(cell.parentElement.dataset.id, "order_no"); }
 });
 $("#registry-grid").addEventListener("keydown", event => {
-  if (!active || !columns().includes(active.field) || event.target.closest(".column-resizer,.address-details") || event.isComposing) return;
+  if (!active || !columns().includes(active.field) || event.target.closest(".column-resizer,.address-details,select") || event.isComposing) return;
   const modifier = event.ctrlKey || event.metaKey;
   if (modifier && event.key.toLowerCase() === "a" && !editing) {
     event.preventDefault(); event.stopPropagation(); closeGiftPicker();
-    selectRange({ id: rows[0].id, field: "order_no" }, { id: rows.at(-1).id, field: "status" });
+    selectRange({ id: gridRows()[0].id, field: "order_no" }, { id: gridRows().at(-1).id, field: "status" });
     focusCell(active.id, active.field, true); return;
   }
   if (editing && !["Enter", "Tab", "Escape"].includes(event.key)) return;
   if (event.key === "Escape") {
-    event.preventDefault(); event.stopPropagation(); finishEditing(true);
+    event.preventDefault(); event.stopPropagation();
+    if (!editing && document.body.classList.contains("sheet-expanded")) { toggleSheetFullscreen(); return; }
+    finishEditing(true);
     selectRange(active); focusCell(active.id, active.field, true); return;
   }
   if (["Delete", "Backspace"].includes(event.key) && !editing) {
@@ -947,15 +1107,15 @@ $("#registry-grid").addEventListener("keydown", event => {
     event.preventDefault(); event.stopPropagation(); finishEditing(); closeGiftPicker();
     const extending = event.shiftKey && event.key in arrows;
     const origin = extending && selection ? selection.focus : active;
-    let row = rows.findIndex(item => item.id === origin.id), col = columns().indexOf(origin.field);
+    let row = gridRows().findIndex(item => item.id === origin.id), col = columns().indexOf(origin.field);
     if (event.key in arrows) { row += arrows[event.key][0]; col += arrows[event.key][1]; }
     if (event.key === "Enter") row += event.shiftKey ? -1 : 1;
     if (event.key === "Tab") { col += event.shiftKey ? -1 : 1; if (col > 3) { row++; col = 0; } if (col < 0 && row > 0) { row--; col = 3; } }
     if (event.key === "Home") { col = 0; if (modifier) row = 0; }
-    if (event.key === "End") { col = 3; if (modifier) row = rows.length - 1; }
-    if (row >= rows.length && ["Tab", "Enter"].includes(event.key) && rows.length < 10000) { remember(); rows.push(newRow()); changed(); render(); }
-    row = Math.max(0, Math.min(rows.length - 1, row)); col = Math.max(0, Math.min(3, col));
-    const point = { id: rows[row].id, field: columns()[col] };
+    if (event.key === "End") { col = 3; if (modifier) row = gridRows().length - 1; }
+    if (!selectedStatus && row >= gridRows().length && ["Tab", "Enter"].includes(event.key) && rows.length < 10000) { remember(); rows.push(newRow()); changed(); render(); }
+    row = Math.max(0, Math.min(gridRows().length - 1, row)); col = Math.max(0, Math.min(3, col));
+    const point = { id: gridRows()[row].id, field: columns()[col] };
     if (extending) { selectRange(selection?.anchor || active, point); focusCell(active.id, active.field, true); scrollCellIntoView(point.id, point.field); }
     else focusCell(point.id, point.field);
     return;
@@ -972,12 +1132,12 @@ $("#registry-grid").addEventListener("keydown", event => {
 }, true);
 function handleNavigation(event, id, field) {
   if (event.isComposing) return;
-  const index = rows.findIndex(row => row.id === id);
+  const index = gridRows().findIndex(row => row.id === id);
   if (["Enter", "ArrowUp", "ArrowDown"].includes(event.key) && !(event.key === "Enter" && event.target.tagName === "BUTTON")) {
     event.preventDefault();
     const next = index + ((event.key === "ArrowUp" || (event.key === "Enter" && event.shiftKey)) ? -1 : 1);
-    if (next >= rows.length && rows.length < 10000) { remember(); rows.push(newRow()); changed(); render(); }
-    if (next >= 0 && next < rows.length) focusCell(rows[next].id, addressFields.includes(field) && !rows[next].change_address ? "order_no" : field);
+    if (!selectedStatus && next >= gridRows().length && rows.length < 10000) { remember(); rows.push(newRow()); changed(); render(); }
+    if (next >= 0 && next < gridRows().length) focusCell(gridRows()[next].id, addressFields.includes(field) && !gridRows()[next].change_address ? "order_no" : field);
   }
 }
 function parseTSV(text) {
@@ -999,24 +1159,30 @@ function parseTSV(text) {
 function selectionMatrix() {
   const bounds = rangeBounds();
   if (!bounds) return null;
-  return rows.slice(bounds.top, bounds.bottom + 1).map(row => columns().slice(bounds.left, bounds.right + 1).map(field =>
+  return gridRows().slice(bounds.top, bounds.bottom + 1).map(row => columns().slice(bounds.left, bounds.right + 1).map(field =>
     field === "status" ? status(row).label : field === "change_address" ? (row.change_address ? "是" : "否") : row[field]));
 }
 function clipboardContent() {
   const matrix = selectionMatrix();
   if (!matrix) return null;
+  const bounds = rangeBounds();
+  const giftIds = gridRows().slice(bounds.top, bounds.bottom + 1).map(row => columns().slice(bounds.left, bounds.right + 1)
+    .map(field => field === "gift" && validGifts(row) ? [...row.gift_ids] : null));
+  const payload = JSON.stringify({ version: 2, matrix, giftIds });
   const text = matrix.map(line => line.map(value => /[\t\r\n"]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value).join("\t")).join("\r\n");
-  const encoded = btoa(Array.from(new TextEncoder().encode(JSON.stringify(matrix)), byte => String.fromCharCode(byte)).join(""));
+  const encoded = btoa(Array.from(new TextEncoder().encode(payload), byte => String.fromCharCode(byte)).join(""));
   const table = document.createElement("table"); table.dataset.giftRegistryRange = encoded;
   for (const line of matrix) {
     const tr = table.insertRow();
     for (const value of line) {
       const td = tr.insertCell(); td.textContent = value;
       // Excel 的 HTML 剪贴板格式：长订单号按文本导入，保留前导零。
-      td.setAttribute("style", 'mso-number-format:"\\@";white-space:pre-wrap'); td.setAttribute("x:str", "");
+      td.setAttribute("x:str", "");
     }
   }
-  return { text, json: JSON.stringify(matrix), html: `<html xmlns:x="urn:schemas-microsoft-com:office:excel"><body><!--StartFragment-->${table.outerHTML}<!--EndFragment--></body></html>` };
+  // Excel 专用格式仅写入剪贴板字符串，不在工作台 DOM 应用内联样式（CSP）。
+  const tableHtml = table.outerHTML.replaceAll("<td ", '<td style="mso-number-format:&quot;\\@&quot;;white-space:pre-wrap" ');
+  return { text, json: payload, html: `<html xmlns:x="urn:schemas-microsoft-com:office:excel"><body><!--StartFragment-->${tableHtml}<!--EndFragment--></body></html>` };
 }
 function structuredClipboard(data) {
   try {
@@ -1026,8 +1192,10 @@ function structuredClipboard(data) {
       if (encoded) value = new TextDecoder().decode(Uint8Array.from(atob(encoded), char => char.charCodeAt(0)));
     }
     if (!value) return null;
-    const matrix = JSON.parse(value);
-    return Array.isArray(matrix) && matrix.length > 0 && matrix.length <= 10000 && matrix.every(line => Array.isArray(line) && line.length > 0 && line.length <= 7 && line.every(cell => typeof cell === "string")) ? matrix : null;
+    const payload = JSON.parse(value), matrix = payload.version === 2 ? payload.matrix : payload;
+    if (!(Array.isArray(matrix) && matrix.length > 0 && matrix.length <= 10000 && matrix.every(line => Array.isArray(line) && line.length > 0 && line.length <= 7 && line.every(cell => typeof cell === "string")))) return null;
+    if (payload.version === 2 && Array.isArray(payload.giftIds)) matrix.giftIds = payload.giftIds;
+    return matrix;
   } catch { return null; }
 }
 function textEditingTarget(target) {
@@ -1068,10 +1236,10 @@ function pasteText(text, clipboardMatrix = null) {
   if (!initialized) return;
   finishEditing(); closeGiftPicker();
   const matrix = clipboardMatrix || parseTSV(text);
-  if (matrix[0]?.[0]?.trim() === "订单号" && ["礼品", "礼赠", "赠品"].includes(matrix[0]?.[1]?.trim())) matrix.shift();
+  if (matrix[0]?.[0]?.trim() === "订单号" && ["礼品", "礼赠", "赠品"].includes(matrix[0]?.[1]?.trim())) { matrix.shift(); matrix.giftIds?.shift(); }
   if (!matrix.length) return;
   const bounds = rangeBounds();
-  const start = bounds?.top ?? (active ? Math.max(0, rows.findIndex(row => row.id === active.id)) : 0);
+  const start = bounds?.top ?? (active ? Math.max(0, gridRows().findIndex(row => row.id === active.id)) : 0);
   const visible = columns();
   const sourceWidth = Math.max(...matrix.map(line => line.length));
   const legacy = sourceWidth === 7 && (!bounds || bounds.left === 0) && (!active || active.field === "order_no");
@@ -1081,35 +1249,40 @@ function pasteText(text, clipboardMatrix = null) {
   let height = matrix.length, width = sourceWidth;
   if (bounds && !legacy) {
     const selectedHeight = bounds.bottom - bounds.top + 1, selectedWidth = bounds.right - bounds.left + 1;
-    if (selectedHeight % height === 0 && selectedWidth % width === 0) { height = selectedHeight; width = selectedWidth; }
-    else if (selectedHeight > height || selectedWidth > width) return toast("选区大小与粘贴内容不匹配，请选择单个起点或相同大小的区域", true);
+    // 单个起点按来源扩展；区域粘贴按各维较大范围循环填充，末尾不足一组也填满。
+    height = Math.max(height, selectedHeight); width = Math.max(width, selectedWidth);
   }
   if (start + height > 10000) return toast("粘贴后将超过 10000 行，请分批录入", true);
+  if (selectedStatus && start + height > gridRows().length) return toast("筛选中只能粘贴到可见行；请清除状态筛选后再新增行", true);
   if (mapping.slice(colStart, colStart + width).every(field => field === "status")) return toast("状态列由登记结果自动更新，不能手动填写");
   const updated = structuredClone(rows);
+  const targets = Array.from({ length: height }, (_, offset) => selectedStatus ? rows.indexOf(gridRows()[start + offset]) : start + offset);
   try {
     for (let offset = 0; offset < height; offset++) {
-      while (updated.length <= start + offset) updated.push(newRow());
+      const target = targets[offset];
+      while (updated.length <= target) updated.push(newRow());
       for (let column = 0; column < width; column++) {
         const value = matrix[offset % matrix.length][column % sourceWidth] ?? "";
         const field = mapping[colStart + column];
         if (!field || field === "status") continue;
-        if (field === "change_address") updated[start + offset][field] = asBoolean(value);
+        if (field === "change_address") updated[target][field] = asBoolean(value);
         else if (field === "gift") {
-          const match = matchGifts(value); assignGifts(updated[start + offset], match.ids, match.unmatched);
-          if (updated[start + offset].gift.length > fields.gift.max) throw new Error("礼品内容过长，请减少单行礼品数量");
+          const codes = matrix.giftIds?.[offset % matrix.length]?.[column % sourceWidth];
+          if (Array.isArray(codes) && codes.length && codes.every(id => typeof id === "string" && giftCatalog.some(gift => gift.id === id))) assignGifts(updated[target], codes);
+          else { const match = matchGifts(value); assignGifts(updated[target], match.ids, match.unmatched); }
+          if (updated[target].gift.length > fields.gift.max) throw new Error("礼品内容过长，请减少单行礼品数量");
         }
         else {
           if (value.length > fields[field].max) throw new Error(`“${fields[field].label}”内容过长，请检查粘贴的数据`);
-          updated[start + offset][field] = value;
+          updated[target][field] = value;
         }
       }
     }
     remember(); rows = updated; changed();
-    if (mapping === visible || legacy) selection = { anchor: { id: rows[start].id, field: visible[legacy ? 0 : colStart] }, focus: { id: rows[start + height - 1].id, field: visible[legacy ? 3 : colStart + width - 1] } };
-    active = selection?.anchor || { id: rows[start].id, field: mapping[colStart] };
-    render(); focusCell(active.id, active.field, true);
-    const unmatched = updated.slice(start, start + height).filter(row => row.gift && !validGifts(row)).length;
+    if (mapping === visible || legacy) selection = { anchor: { id: rows[targets[0]].id, field: visible[legacy ? 0 : colStart] }, focus: { id: rows[targets.at(-1)].id, field: visible[legacy ? 3 : colStart + width - 1] } };
+    active = selection?.anchor || { id: rows[targets[0]].id, field: mapping[colStart] };
+    render(); if (active) focusCell(active.id, active.field, true);
+    const unmatched = targets.map(index => updated[index]).filter(row => row.gift && !validGifts(row)).length;
     toast(`已粘贴 ${height} 行 × ${width} 列${unmatched ? `，其中 ${unmatched} 行礼品需手动匹配` : ""}${mapping.slice(colStart, colStart + width).includes("status") ? "；状态列保持自动更新" : ""}`, unmatched > 0);
   } catch (error) { toast(error.message, true); }
 }
@@ -1129,15 +1302,16 @@ function clearSelectedCells() {
   finishEditing(); closeGiftPicker();
   const updated = structuredClone(rows);
   for (let index = bounds.top; index <= bounds.bottom; index++) {
+    const target = rows.indexOf(gridRows()[index]);
     for (let col = bounds.left; col <= bounds.right; col++) {
       const field = columns()[col];
-      if (field === "gift") assignGifts(updated[index], []);
-      else if (field === "change_address") updated[index][field] = false;
-      else if (field !== "status") updated[index][field] = "";
+      if (field === "gift") assignGifts(updated[target], []);
+      else if (field === "change_address") updated[target][field] = false;
+      else if (field !== "status") updated[target][field] = "";
     }
   }
   if (JSON.stringify(updated) === JSON.stringify(rows)) return;
-  remember(); rows = updated; changed(); render(); focusCell(active.id, active.field, true);
+  remember(); rows = updated; changed(); render(); if (active) focusCell(active.id, active.field, true);
   toast("已清空选区内容，可按 Ctrl+Z 撤销");
 }
 
@@ -1153,12 +1327,13 @@ if (document.fonts?.ready) document.fonts.ready.then(scheduleColumnSizing);
 $("#reload").addEventListener("click", () => location.reload());
 $("#delete-row").addEventListener("click", () => {
   if (!active) return;
-  const bounds = rangeBounds(), index = bounds?.top ?? rows.findIndex(row => row.id === active.id);
-  remember(); rows.splice(index, bounds ? bounds.bottom - bounds.top + 1 : 1);
+  const bounds = rangeBounds(), index = bounds?.top ?? gridRows().findIndex(row => row.id === active.id);
+  const removed = new Set(gridRows().slice(index, bounds ? bounds.bottom + 1 : index + 1).map(row => row.id));
+  remember(); rows = rows.filter(row => !removed.has(row.id));
   if (!rows.length) rows.push(newRow());
   selection = null;
   active = { id: rows[Math.min(index, rows.length - 1)].id, field: "order_no" };
-  changed(); render(); focusCell(active.id, active.field);
+  changed(); render(); if (active) focusCell(active.id, active.field);
 });
 function undo() {
   if (!history.length) return;
@@ -1181,6 +1356,15 @@ $("#paste").addEventListener("click", async () => {
   }
   catch { toast("请选中起始单元格后，按 Ctrl+V 粘贴 Excel 数据"); }
 });
+function formulaEditing() { return document.activeElement === $("#formula-input") && !$("#formula-input").disabled; }
+function formulaHasChanges() {
+  if (!formulaEditing() || !active) return false;
+  const row = rows.find(row => row.id === active.id);
+  if (!row) return false;
+  const original = active.field === "change_address" ? (row.change_address ? "是" : "否") : row[active.field];
+  return $("#formula-input").value !== String(original ?? "");
+}
+function draftSyncAllowed() { return !hostManaging && !editing && !pickerRowId && !formulaEditing() && !document.querySelector("dialog[open]"); }
 $("#formula-input").addEventListener("change", () => {
   if (!active) return;
   const row = rows.find(row => row.id === active.id), field = active.field, value = $("#formula-input").value;
@@ -1236,16 +1420,39 @@ document.addEventListener("keydown", event => {
     }
     return;
   }
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); saveNow(true); }
+  if (document.querySelector("dialog[open]")) return;
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+    event.preventDefault(); if (formulaEditing()) $("#formula-input").blur(); saveNow(true);
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !event.shiftKey) { event.preventDefault(); undo(); }
 });
 document.addEventListener("visibilitychange", () => { if (document.hidden && initialized) saveNow(); });
-window.addEventListener("beforeunload", event => { if (version !== savedVersion) { event.preventDefault(); event.returnValue = ""; } });
+window.addEventListener("beforeunload", event => { if (version !== savedVersion || formulaHasChanges()) { event.preventDefault(); event.returnValue = ""; } });
 async function refreshExecutionStates() {
   try {
     if (initialized) {
+      const epoch = stateEpoch;
       const result = await api("/api/registrations/status");
+      document.getElementById("shutdown-notice").hidden = !result.server_stopping;
+      if (epoch !== stateEpoch || hostManaging || starting || retrySubmitting) return;
       rowStates = result.row_states;
+      if (Number.isInteger(result.draft_revision) && result.draft_revision > revision && !saving) {
+        if (version === savedVersion && draftSyncAllowed()) {
+          const remoteDraft = await api("/api/rows");
+          if (epoch !== stateEpoch) return;
+          // HTTP 等待期间可能又开始编辑，不能用后台清理结果覆盖新的输入。
+          if (remoteDraft.revision > revision && version === savedVersion && !saving && draftSyncAllowed()) {
+            revision = remoteDraft.revision; rows = remoteDraft.rows.length ? remoteDraft.rows : [newRow()];
+            rowStates = remoteDraft.row_states || {}; history.length = 0; selection = null; active = null; render();
+          }
+        }
+        if ((version !== savedVersion || formulaHasChanges()) && !conflict && result.draft_revision > revision) {
+          conflict = true; saveIndicator("后台草稿已更新，请保留未保存内容后刷新", "error");
+          toast("后台归档或其他窗口更新了草稿。你的未保存内容已保留，请复制后刷新，避免覆盖更新。", true);
+        }
+      }
+      const nextDisplayed = rows.filter(row => !selectedStatus || status(row).type === selectedStatus);
+      if (!editing && !pickerRowId && !formulaEditing() && JSON.stringify(nextDisplayed.map(row => row.id)) !== JSON.stringify(displayedRows.map(row => row.id))) render();
       for (const row of rows) rowElement(row.id)?.querySelector('[data-field="status"]').replaceChildren(statusNode(row));
       if (active?.field === "status") activate(active.id, active.field);
       updateSummary();
@@ -1255,15 +1462,278 @@ async function refreshExecutionStates() {
   finally { setTimeout(refreshExecutionStates, document.hidden ? 5000 : 1500); }
 }
 
-let networkChangeId = null;
+let retrySubmitting = false;
+let retryLoading = false, retryTimer = null, retryFailureIds = [];
+function inGiftGroup(id, group) {
+  const memberships = giftGroups.memberships[id] || [];
+  return !group || (group === "__ungrouped" ? memberships.length === 0 : memberships.includes(group));
+}
+function groupSelectOptions(select, value) {
+  select.replaceChildren(new Option("全部礼品", ""), new Option("未分组", "__ungrouped"));
+  for (const group of giftGroups.groups) select.add(new Option(group.name, group.id));
+  select.value = [...select.options].some(option => option.value === value) ? value : "";
+}
+function renderGroupFilter() {
+  groupSelectOptions($("#gift-group-filter"), selectedGiftGroup);
+  selectedGiftGroup = $("#gift-group-filter").value;
+}
+function groupManagerGifts() {
+  const query = normalizeGift($("#group-gift-search").value);
+  return giftCatalog.filter(gift => inGiftGroup(gift.id, $("#group-manage-filter").value)
+    && (!query || [gift.id, gift.name, ...(gift.aliases || [])].some(value => normalizeGift(value).includes(query))));
+}
+function renderGroupManagerList() {
+  const list = $("#group-gift-list"); list.replaceChildren();
+  for (const gift of groupManagerGifts()) {
+    const label = document.createElement("label"), check = document.createElement("input"), text = document.createElement("span"), meta = document.createElement("small");
+    label.className = "group-gift-row"; check.type = "checkbox"; check.value = gift.id; check.checked = groupSelection.has(gift.id);
+    text.textContent = gift.name;
+    meta.textContent = gift.id + " · " + (giftGroups.groups.filter(group => (giftGroups.memberships[gift.id] || []).includes(group.id)).map(group => group.name).join("、") || "未分组");
+    check.addEventListener("change", () => { if (check.checked) groupSelection.add(gift.id); else groupSelection.delete(gift.id); updateGroupCount(); });
+    const description = document.createElement("span"); description.append(text, meta); label.append(check, description); list.append(label);
+  }
+  if (!list.children.length) list.textContent = "当前分组没有匹配礼品";
+  updateGroupCount();
+}
+function updateGroupCount() {
+  $("#group-selected-count").textContent = `已选 ${groupSelection.size} 项`;
+  $("#assign-groups").disabled = !groupSelection.size || groupsSaving;
+}
+function renderGroupTargets() {
+  const targets = $("#group-targets"); targets.replaceChildren();
+  const legend = document.createElement("legend"); legend.textContent = "选择分组（可多选）"; targets.append(legend);
+  for (const group of giftGroups.groups) {
+    const label = document.createElement("label"), check = document.createElement("input"); check.type = "checkbox"; check.value = group.id;
+    label.append(check, document.createTextNode(group.name)); targets.append(label);
+  }
+}
+async function openGroupManager() {
+  if (!hostActionsAvailable) return;
+  closeGiftPicker(); groupSelection.clear(); $("#group-error").textContent = "";
+  try {
+    const [catalog, groups] = await Promise.all([api("/api/gifts"), api("/api/gift-groups")]);
+    giftCatalog = catalog.gifts; giftGroups = groups;
+    groupSelectOptions($("#group-manage-filter"), ""); $("#group-gift-search").value = "";
+    renderGroupTargets(); renderGroupManagerList(); renderGroupFilter(); $("#groups-dialog").showModal();
+  } catch (error) { toast(error.message, true); }
+}
+async function updateGroups(update) {
+  if (groupsSaving) return;
+  groupsSaving = true; $("#create-group").disabled = true; updateGroupCount(); $("#group-error").textContent = "";
+  try {
+    giftGroups = await api("/api/gift-groups", { method: "PUT", body: JSON.stringify({ revision: giftGroups.revision, ...update }) });
+    groupSelectOptions($("#group-manage-filter"), $("#group-manage-filter").value);
+    renderGroupTargets(); renderGroupManagerList(); renderGroupFilter();
+    $("#new-group-name").value = ""; toast("礼品分组已保存");
+  } catch (error) { $("#group-error").textContent = error.message; }
+  finally { groupsSaving = false; $("#create-group").disabled = false; updateGroupCount(); }
+}
+$("#gift-group-filter").addEventListener("change", event => { selectedGiftGroup = event.target.value; renderGiftOptions(); });
+$("#manage-groups").addEventListener("click", openGroupManager);
+$("#picker-manage-groups").addEventListener("click", openGroupManager);
+$("#groups-close").addEventListener("click", () => $("#groups-dialog").close());
+$("#group-gift-search").addEventListener("input", renderGroupManagerList);
+$("#group-manage-filter").addEventListener("change", renderGroupManagerList);
+$("#group-select-visible").addEventListener("click", () => { for (const gift of groupManagerGifts()) groupSelection.add(gift.id); renderGroupManagerList(); });
+$("#create-group").addEventListener("click", () => updateGroups({ action: "create", name: $("#new-group-name").value }));
+$("#assign-groups").addEventListener("click", () => updateGroups({ action: "assign", mode: $("#group-assign-mode").value, gift_ids: [...groupSelection], group_ids: [...$("#group-targets").querySelectorAll("input:checked")].map(input => input.value) }));
+async function refreshMaintenanceStatus() {
+  try {
+    const status = await api("/api/maintenance/status"), label = $("#maintenance-summary"); label.hidden = false;
+    label.textContent = status.last_error || `北京时间每日 01:00 自动导出上一日日志并归档成功行。下次：${status.next_run.slice(0, 10)} 01:00。日志目录：${status.export_directory}${status.last_export_day ? `；最近导出 ${status.last_export_day}，清理 ${status.last_removed_count} 行` : ""}`;
+  } catch { /* 断连不影响正在编辑的草稿。 */ }
+  finally { setTimeout(refreshMaintenanceStatus, 30000); }
+}
+async function submitFailureRetry(failureId) {
+  if (!hostActionsAvailable || retrySubmitting) return;
+  retrySubmitting = true;
+  document.querySelectorAll(".row-retry, #retry-list button, #retry-all").forEach(button => { button.disabled = true; });
+  try {
+    const response = await api("/api/registrations/retry", { method: "POST", body: JSON.stringify({ failure_id: failureId }) });
+    rowStates = response.row_states; render();
+    toast(response.reused ? "已沿用该记录的重登请求。" : "已加入串行核查队列，每单最多提交一次。");
+  } catch (error) { toast(error.message, true); }
+  finally { retrySubmitting = false; render(); refreshRetryList(); }
+}
+async function retryRow(row, button) {
+  if (retrySubmitting) return;
+  button.disabled = true;
+  try {
+    await prepareHostAction();
+    const result = await api("/api/registrations/failures");
+    const failure = result.failures.find(item => taskIdentity(item) === taskIdentity(row));
+    if (!failure) throw new Error("该订单失败记录已更新，请刷新状态后查看。");
+    if (!failure.eligible) throw new Error(failure.blocked_reason || "该记录不能安全重登");
+    await submitFailureRetry(failure.failure_id);
+  } catch (error) { toast(error.message, true); }
+  finally { button.disabled = false; }
+}
+async function refreshRetryList() {
+  if (retryLoading || retrySubmitting || !$("#retry-dialog").open) return;
+  retryLoading = true;
+  try {
+    const result = await api("/api/registrations/failures");
+    retryFailureIds = result.failures.filter(failure => failure.eligible).map(failure => failure.failure_id);
+    $("#retry-summary").textContent = `当前失败 ${result.failures.length} 单 · 可核查重登 ${retryFailureIds.length} 单 · 需人工处理 ${result.failures.length - retryFailureIds.length} 单`;
+    $("#retry-all").disabled = result.busy || !retryFailureIds.length;
+    const list = $("#retry-list"); list.replaceChildren();
+    $("#retry-message").textContent = result.busy ? "登记任务执行中；可继续为其他失败订单排队，逐单核查。" : result.failures.length ? "选择一条失败记录，核查后重新登记。" : "没有需要处理的失败订单。";
+    for (const failure of result.failures) {
+      const card = document.createElement("section"); card.className = `retry-card ${failure.eligible ? "retry-eligible" : "retry-blocked"}`;
+      const title = document.createElement("strong"); title.textContent = failure.order_no;
+      const gift = document.createElement("p"); gift.textContent = `${failure.gift} · 编码：${failure.gift_ids.join("、")}`;
+      const detail = document.createElement("p"); detail.textContent = `失败原因：${failure.detail}`;
+      const note = document.createElement("p"); note.className = "retry-note";
+      note.textContent = failure.blocked_reason || "可发起重登核查；不会清除防重记录。";
+      const button = document.createElement("button"); button.className = "button primary";
+      button.type = "button"; button.textContent = failure.eligible ? "核查并重登" : "需人工核查";
+      button.disabled = !failure.eligible || retrySubmitting;
+      button.addEventListener("click", () => submitFailureRetry(failure.failure_id));
+      const heading = document.createElement("div"); heading.className = "retry-card-heading";
+      heading.append(title, button); card.append(heading, gift, detail, note); list.append(card);
+    }
+  } catch (error) { $("#retry-message").textContent = error.message; }
+  finally {
+    retryLoading = false; clearTimeout(retryTimer);
+    if ($("#retry-dialog").open) retryTimer = setTimeout(refreshRetryList, 3000);
+  }
+}
+$("#retry-failures").addEventListener("click", async () => {
+  if (!hostActionsAvailable) return;
+  try { await prepareHostAction(); $("#retry-batch-result").hidden = true; $("#retry-dialog").showModal(); refreshRetryList(); }
+  catch (error) { toast(error.message, true); }
+});
+$("#retry-close").addEventListener("click", () => $("#retry-dialog").close());
+$("#retry-dialog").addEventListener("close", () => clearTimeout(retryTimer));
+$("#retry-all").addEventListener("click", async () => {
+  if (retryLoading || retrySubmitting || !retryFailureIds.length) return;
+  const failureIds = [...retryFailureIds];
+  retryLoading = true; $("#retry-all").disabled = true;
+  $("#retry-list").querySelectorAll("button").forEach(button => { button.disabled = true; });
+  try {
+    const result = await api("/api/registrations/retry-all", { method: "POST", body: JSON.stringify({ failure_ids: failureIds }) });
+    rowStates = result.row_states; render();
+    const accepted = result.results.filter(item => item.accepted), blocked = result.results.filter(item => !item.accepted);
+    const label = $("#retry-batch-result"); label.hidden = false;
+    label.textContent = `本次已接收 ${accepted.length} 条（含复用 ${accepted.filter(item => item.reused).length} 条），拦截 ${blocked.length} 条。` +
+      [...new Set(blocked.map(item => item.reason))].join("；") + " 每单独立核查，新的失败不会自动重登。";
+    toast(`批量核查已接收 ${accepted.length} 条，拦截 ${blocked.length} 条`);
+  } catch (error) { toast(error.message, true); }
+  finally { retryLoading = false; refreshRetryList(); }
+});
+
+let hostManaging = false, statusSelectedIds = [];
+let cancellationTargets = [];
+function openCancellation(identifiers) {
+  if (!hostActionsAvailable || hostManaging) return;
+  cancellationTargets = identifiers.flatMap(id => {
+    const row = rows.find(row => row.id === id), state = rowStates[id];
+    return row && state?.state === "queued" && state.signature === rowSignature(row)
+      ? [{ row_id: id, task_id: state.task_id }] : [];
+  });
+  if (!cancellationTargets.length) return toast("所选订单中没有内容未修改的排队任务。已开始处理的订单不能取消。", true);
+  $("#cancel-selection").textContent = `所选 ${identifiers.length} 行中，${cancellationTargets.length} 行正在等待执行。`;
+  $("#cancel-dialog").showModal();
+}
+$("#cancel-queued").addEventListener("click", () => openCancellation(selectedRowIds()));
+$("#cancel-close").addEventListener("click", () => $("#cancel-dialog").close());
+$("#cancel-apply").addEventListener("click", async () => {
+  if (hostManaging || !hostActionsAvailable || !cancellationTargets.length) return;
+  hostManaging = true; $("#cancel-apply").disabled = true;
+  try {
+    const result = await api("/api/registrations/cancel", { method: "POST",
+      body: JSON.stringify({ revision, targets: cancellationTargets }) });
+    rowStates = result.row_states;
+    $("#cancel-dialog").close();
+    const skipped = result.results.filter(item => !item.cancelled).length;
+    toast(`已取消 ${result.count} 单的排队（共 ${result.task_count} 个任务）。${skipped ? `${skipped} 行已开始、已结束或已变化，未取消。` : "记录已保留。"}`, !result.count);
+  } catch (error) { toast(error.message, true); }
+  finally { hostManaging = false; $("#cancel-apply").disabled = false; render(); }
+});
+function selectedRowIds() {
+  const bounds = rangeBounds();
+  return bounds ? gridRows().slice(bounds.top, bounds.bottom + 1).map(row => row.id) : active ? [active.id] : [];
+}
+async function prepareHostAction() {
+  if (formulaHasChanges()) $("#formula-input").dispatchEvent(new Event("change"));
+  finishEditing(); closeGiftPicker();
+  await saveNow();
+  if (conflict || version !== savedVersion) throw new Error("请先保存当前草稿并处理编辑冲突");
+}
+$("#edit-status").addEventListener("click", () => {
+  if (!hostActionsAvailable) return;
+  statusSelectedIds = selectedRowIds();
+  if (!statusSelectedIds.length) return toast("请先选择订单行", true);
+  $("#status-selection").textContent = `所选 ${statusSelectedIds.length} 行`;
+  $("#status-dialog").showModal();
+});
+$("#status-close").addEventListener("click", () => $("#status-dialog").close());
+$("#status-apply").addEventListener("click", async () => {
+  if (hostManaging || !hostActionsAvailable) return;
+  hostManaging = true; $("#status-apply").disabled = true;
+  try {
+    await prepareHostAction();
+    const result = await api("/api/rows/status", { method: "POST", body: JSON.stringify({ revision, row_ids: statusSelectedIds, status: $("#manual-status").value }) });
+    rowStates = result.row_states; render(); $("#status-dialog").close(); toast(`已更新 ${result.count} 行人工状态`);
+  } catch (error) { toast(error.message, true); }
+  finally { hostManaging = false; $("#status-apply").disabled = false; }
+});
+async function deleteHostRows(all) {
+  if (hostManaging || !hostActionsAvailable) return;
+  const ids = selectedRowIds();
+  if (!all && !ids.length) return toast("请先选择订单行", true);
+  const count = all ? rows.length : ids.length;
+  if (!confirm(`删除${all ? "全部（含筛选隐藏行）" : "所选"} ${count} 行草稿订单？删除前会备份，任务历史与防重记录保留，可撤销。`)) return;
+  hostManaging = true;
+  try {
+    await prepareHostAction();
+    const previous = structuredClone(rows), actionVersion = version;
+    const result = await api("/api/rows/delete", { method: "POST", body: JSON.stringify({ revision, row_ids: ids, all }) });
+    if (version !== actionVersion || formulaHasChanges() || editing) {
+      conflict = true; throw new Error("删除期间发生了新编辑；已保留当前输入，请复制后刷新查看删除结果");
+    }
+    history.push(previous); revision = result.revision; rows = result.rows.length ? result.rows : [newRow()];
+    rowStates = result.row_states; active = null; selection = null; render();
+    toast(`已删除 ${result.removed} 行草稿订单，备份和任务历史已保留`);
+  } catch (error) { toast(error.message, true); }
+  finally { hostManaging = false; }
+}
+$("#host-delete-selected").addEventListener("click", () => deleteHostRows(false));
+$("#host-delete-all").addEventListener("click", () => deleteHostRows(true));
+$("#export-today").addEventListener("click", async () => {
+  const button = $("#export-today"); button.disabled = true;
+  try {
+    const response = await fetch("/api/registrations/export-today", { cache: "no-store" });
+    if (!response.ok) throw new Error((await response.json()).error || "日志导出失败");
+    const blob = await response.blob(), url = URL.createObjectURL(blob);
+    const link = document.createElement("a"); link.href = url;
+    link.download = response.headers.get("Content-Disposition")?.match(/filename="([^"]+)"/)?.[1] || "gift-registration.xlsx";
+    document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000);
+    toast("今日日志已导出，包含成功与失败两个工作表。");
+  } catch (error) { toast(error.message, true); }
+  finally { button.disabled = false; }
+});
+
+let networkChangeId = null, networkNoticeKey = null, dismissedNetworkNotice = null;
+try { dismissedNetworkNotice = localStorage.getItem("gift_registry.dismissed_network_notice.v1"); } catch { /* 本页仍可隐藏。 */ }
 function renderNetworkNotice(status) {
   const notice = $("#network-notice");
-  notice.hidden = !["changed", "offline", "unavailable"].includes(status.state);
+  if (status.state === "ok") {
+    dismissedNetworkNotice = null;
+    try { localStorage.removeItem("gift_registry.dismissed_network_notice.v1"); } catch { /* 内存状态已恢复。 */ }
+  }
+  networkNoticeKey = JSON.stringify([status.state, status.change_id, status.configured_ip, status.domain, status.message]);
+  notice.hidden = networkNoticeKey === dismissedNetworkNotice || !["changed", "offline", "unavailable"].includes(status.state);
   $("#network-notice-text").textContent = status.message || "";
+  $("#network-notice .network-notice-actions a").hidden = !status.domain;
   networkChangeId = status.change_id;
   $("#network-ack").hidden = status.state !== "changed" ||
     !status.current_addresses?.some(address => address.ip === status.configured_ip);
 }
+$("#network-dismiss").addEventListener("click", () => {
+  dismissedNetworkNotice = networkNoticeKey; $("#network-notice").hidden = true;
+  try { localStorage.setItem("gift_registry.dismissed_network_notice.v1", dismissedNetworkNotice); } catch { /* 本页生效。 */ }
+});
 async function refreshNetworkNotice() {
   try { renderNetworkNotice(await api("/api/network/status")); }
   catch { /* 保留已显示的提醒，网络探测不影响草稿和业务队列。 */ }
@@ -1277,16 +1747,24 @@ $("#network-ack").addEventListener("click", async () => {
 });
 
 (async () => {
-  const buttons = [...document.querySelectorAll(".toolbar button,#add-bottom,#login-button")];
+  const buttons = [...document.querySelectorAll(".toolbar button,#add-bottom,#login-button,#toggle-fullscreen")];
   buttons.forEach(button => { button.disabled = true; });
   try {
     const config = await api("/api/config"); token = config.token; giftCatalog = config.gifts || []; catalogEditable = config.frontend_version >= 4;
+    giftGroups = config.gift_groups || giftGroups; renderGroupFilter();
+    hostActionsAvailable = config.host_actions_available === true;
+    $("#picker-manage-groups").hidden = !hostActionsAvailable;
     if (!giftCatalog.length) throw new Error("未配置礼品选项，请重启工作台");
     const document = await api("/api/rows"); revision = document.revision; rowStates = document.row_states || {};
     rows = document.rows.length ? document.rows : Array.from({ length: 18 }, newRow);
     const before = JSON.stringify(rows);
-    rows.forEach(row => { const match = matchGifts(row.gift); assignGifts(row, match.ids, match.unmatched); });
+    rows.forEach(row => { if (!validGifts(row)) { const match = matchGifts(unresolvedGiftLabels(row).join("、")); assignGifts(row, [...(row.gift_ids || []), ...match.ids], match.unmatched); } });
     initialized = true;
+    $("#host-actions").hidden = config.host_actions_available !== true;
+    $("#retry-failures").hidden = !hostActionsAvailable;
+    $("#edit-status").hidden = !hostActionsAvailable;
+    $("#cancel-queued").hidden = !hostActionsAvailable;
+    if (hostActionsAvailable && config.frontend_version >= 6) refreshMaintenanceStatus();
     if (config.network_settings_available) refreshNetworkNotice();
     buttons.forEach(button => { button.disabled = false; });
     if (config.platform_login_available === false) {

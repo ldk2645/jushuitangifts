@@ -201,7 +201,7 @@ def quit_owned_driver(driver):
 
     if not state.chrome_closed:
         # 未确认关闭时保留服务和连接，助手中的明确“重试关闭”仍可发出 QUIT。
-        raise BrowserShutdownError("未能确认本工具的 Chrome 已关闭，登录配置仍保留，请关闭本工具浏览器后重试")
+        raise BrowserShutdownError("未能确认本工具的浏览器已关闭，登录配置仍保留，请关闭本工具浏览器后重试")
 
     service_closed = _stop_service(driver)
     _close_transport(driver)

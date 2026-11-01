@@ -27,6 +27,35 @@ def authorization(password=PASSWORD):
 
 
 class NetworkSettingsTests(unittest.TestCase):
+    def test_ip_only_http_requires_password_and_keeps_host_actions_local(self):
+        settings = NetworkSettings(True, '192.168.1.91', '192.168.1.0/24')
+        case = LanHTTPTests()
+        with patch(__name__ + '.SETTINGS', settings):
+            case.setUp()
+        try:
+            case.host = f'192.168.1.91:{case.server.server_port}'
+            case.assert_status(401, '/api/config', auth=False)
+            with case.request('/api/config') as response:
+                self.assertFalse(json.load(response)['host_actions_available'])
+            case.assert_status(403, '/api/config', headers={'Host': f':{case.server.server_port}'})
+            with case.request('/api/config', auth=False, headers={'Host':f'127.0.0.1:{case.server.server_port}'}) as response:
+                self.assertTrue(json.load(response)['host_actions_available'])
+        finally:
+            case.tearDown()
+            case.doCleanups()
+
+    def test_ip_only_lan_is_allowed_without_empty_host_authority(self):
+        settings = NetworkSettings(True, '192.168.1.91', '192.168.1.0/24')
+        self.assertTrue(settings.allows_host('192.168.1.91:8766', 8766))
+        self.assertTrue(settings.allows_client('192.168.1.25'))
+        for host in (':8766', 'example.test:8766', '192.168.1.91:8765'):
+            self.assertFalse(settings.allows_host(host, 8766))
+        self.assertFalse(settings.allows_host('', 80))
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as directory:
+            path = Path(directory) / 'network.json'
+            save_network(settings, path)
+            self.assertEqual(load_network(path), settings)
+
     def test_default_remains_loopback_and_creates_no_configuration(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as directory:
             path = Path(directory) / 'network.local.json'
@@ -252,7 +281,7 @@ class LanHTTPTests(unittest.TestCase):
 
     def test_health_discloses_no_token_or_business_data(self):
         with self.request('/api/health', auth=False) as response:
-            self.assertEqual(set(json.load(response)), {'app', 'lan_enabled', 'domain', 'lan_ip'})
+            self.assertEqual(set(json.load(response)), {'app', 'lan_enabled', 'domain', 'lan_ip', 'stopping'})
 
     def test_duplicate_host_headers_are_rejected(self):
         connection = HTTPConnection('127.0.0.1', self.server.server_port, timeout=3)

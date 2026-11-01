@@ -13,20 +13,33 @@ from .config import DATA_DIR
 from .sessions import atomic_write
 
 BASELINE_PATH = DATA_DIR / 'lan_network_baseline.json'
+PROBE_TIMEOUT_SECONDS = 25
 _PROBE = r"""
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-$result = @(Get-NetIPConfiguration -ErrorAction Stop | Where-Object {
-    $_.NetAdapter.Status -eq 'Up' -and $_.NetAdapter.HardwareInterface -and $_.IPv4DefaultGateway
-} | ForEach-Object {
-    $configuration = $_
-    foreach ($address in $configuration.IPv4Address) {
+$physical = @(Get-NetAdapter -Physical -ErrorAction Stop | Where-Object {
+    $_.Status -eq 'Up' -and $_.HardwareInterface
+})
+$interfaces = [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()
+$result = @(foreach ($adapter in $physical) {
+    $matches = @($interfaces | Where-Object { $_.Id -eq [string]$adapter.InterfaceGuid })
+    if ($matches.Count -ne 1) { continue }
+    $interface = $matches[0]
+    if (-not $interface.Supports([System.Net.NetworkInformation.NetworkInterfaceComponent]::IPv4)) { continue }
+    $properties = $interface.GetIPProperties()
+    $gateways = @($properties.GatewayAddresses | Where-Object {
+        $_.Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork
+    })
+    if (-not $gateways.Count) { continue }
+    $profile = @(Get-NetConnectionProfile -InterfaceIndex $adapter.ifIndex -ErrorAction SilentlyContinue)
+    foreach ($address in $properties.UnicastAddresses) {
+        if ($address.Address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { continue }
         [PSCustomObject]@{
-            adapter = [string]$configuration.NetAdapter.InterfaceGuid
-            name = [string]$configuration.NetProfile.Name
-            ip = [string]$address.IPAddress
+            adapter = [string]$adapter.InterfaceGuid
+            name = [string]$profile[0].Name
+            ip = [string]$address.Address.ToString()
             prefix = [int]$address.PrefixLength
-            gateway = [string]$configuration.IPv4DefaultGateway[0].NextHop
+            gateway = [string]$gateways[0].Address.ToString()
         }
     }
 })
@@ -34,15 +47,31 @@ ConvertTo-Json -InputObject $result -Compress
 """
 
 
+class NetworkProbeError(OSError):
+    """可直接展示的网络探测错误；不包含底层命令输出。"""
+
+
 def probe_network():
     """忽略 VPN、代理及虚拟网卡；执行时间有界，输出不包含账号和访问密码。"""
     if os.name != 'nt':
         raise OSError('Windows network probe required')
-    result = subprocess.run(
-        ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', _PROBE],
-        capture_output=True, encoding='utf-8', errors='strict', timeout=12, check=True,
-        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-    return normalize_connections(json.loads(result.stdout.lstrip('\ufeff')))
+    try:
+        # 不再对 VPN/虚拟网卡逐个调用 Get-NetIPConfiguration；先限定物理网卡，
+        # 再通过系统网络接口读取地址。超时包含 Windows PowerShell 的冷启动时间。
+        result = subprocess.run(
+            ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', _PROBE],
+            capture_output=True, encoding='utf-8', errors='strict', timeout=PROBE_TIMEOUT_SECONDS, check=True,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except subprocess.TimeoutExpired:
+        raise NetworkProbeError(f'网络检测超时（超过 {PROBE_TIMEOUT_SECONDS} 秒）。请稍后重试；若持续失败，请检查 Windows 网络服务。') from None
+    except subprocess.CalledProcessError:
+        raise NetworkProbeError('Windows 网卡查询失败。请检查网络适配器和 Windows 网络服务后重试。') from None
+    except OSError:
+        raise NetworkProbeError('无法启动 Windows PowerShell 进行网络检测。') from None
+    try:
+        return normalize_connections(json.loads(result.stdout.lstrip('\ufeff')))
+    except (ValueError, TypeError, KeyError):
+        raise NetworkProbeError('Windows 返回的网络信息不完整，未选用任何网卡。请重新连接网络后重试。') from None
 
 
 def normalize_connections(connections):
@@ -115,9 +144,10 @@ class NetworkMonitor:
                     status = self._status('offline', '未检测到已连接的物理局域网。恢复连接后将继续检查 IP；请先使用本机地址访问。')
                 elif self.current is None:
                     addresses = '、'.join(entry['ip'] for entry in connections)
-                    message = (f'网络或 IP 已变化：原配置 {self.settings.lan_ip}，当前 {addresses}。'
-                               f'请到 Cloudflare 核对 {self.settings.domain} 的 A 记录，改为用于共享的当前内网 IP，保持“仅 DNS”。'
-                               '同时更新本机共享 IP/子网、防火墙及已有 hosts 映射；更新前请使用 http://127.0.0.1:8765/。')
+                    dns = (f'请到 Cloudflare 核对 {self.settings.domain} 的 A 记录，改为用于共享的当前内网 IP，保持“仅 DNS”。'
+                           if self.settings.domain else '当前使用内网 IP 访问，无需域名或 DNS；请把新访问地址告知其他设备。')
+                    message = (f'网络或 IP 已变化：原配置 {self.settings.lan_ip}，当前 {addresses}。' + dns +
+                               '请重新配置本机共享 IP/子网并更新防火墙规则；更新前请使用主机的回环地址访问。')
                     status = self._status('changed', message, connections)
                 else:
                     baseline = json.loads(self.path.read_text(encoding='utf-8')) if self.path.exists() else None
@@ -130,8 +160,9 @@ class NetworkMonitor:
                         status = self._status('ok', '', connections)
                     elif baseline['connection'] != self.current:
                         status = self._status('changed',
-                            f'网络已切换，当前 IP 为 {self.current["ip"]}。请到 Cloudflare 核对 {self.settings.domain} 的 A 记录。'
-                            'IP 未变化时无需改值；确认仍指向当前主机并保持“仅 DNS”后，可点击“已核对”。', connections)
+                            f'网络已切换，当前 IP 为 {self.current["ip"]}。' +
+                            (f'请到 Cloudflare 核对 {self.settings.domain} 的 A 记录。确认仍指向当前主机并保持“仅 DNS”后，可点击“已核对”。'
+                             if self.settings.domain else '无需修改 DNS；确认其他设备仍能通过该 IP 访问后，可点击“已核对”。'), connections)
                     else:
                         status = self._status('ok', '', connections)
                 self.status = status
@@ -140,7 +171,8 @@ class NetworkMonitor:
                 self.current = None
                 # 探测失败不能清除已经发现的变化，也不能覆盖基线。
                 if self.status['state'] != 'changed':
-                    self.status = self._status('unavailable', '暂时无法读取网络状态，请手动核对主机 IP 和 Cloudflare DNS；稍后自动检查。')
+                    self.status = self._status('unavailable', '暂时无法读取网络状态，请手动核对主机 IP' +
+                                               (' 和 Cloudflare DNS' if self.settings.domain else '') + '；稍后自动检查。')
                 status = self.status.copy()
         if status['state'] == 'changed':
             self._notify(status)
@@ -180,4 +212,4 @@ class NetworkMonitor:
     def close(self):
         self.stopped.set()
         if self.thread is not None:
-            self.thread.join(timeout=13)
+            self.thread.join(timeout=PROBE_TIMEOUT_SECONDS + 1)

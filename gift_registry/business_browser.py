@@ -136,6 +136,9 @@ class BusinessBrowsers:
             browser = None
             try:
                 browser = self.browser_factory(self.sites[site_key], self.store)
+                if self.browser_factory is SiteBrowser:
+                    from .credentials import CredentialStore
+                    browser.headless = CredentialStore().settings()[site_key]['headless']
                 browser.open()
             except Exception:
                 if browser is not None and not self._close_browser(browser):
@@ -147,7 +150,7 @@ class BusinessBrowsers:
                         "业务浏览器启动失败且关闭未完成，请先关闭本工具浏览器并重试关闭工作台") from None
                 # 驱动异常可能含 URL、凭据或页面数据，不透传异常正文。
                 raise PlatformOperationError(
-                    "业务浏览器启动失败，请关闭占用该平台配置的 Chrome，再检查 Chrome 和登录状态") from None
+                    "业务浏览器启动失败，请关闭占用该平台配置的工具浏览器，再检查浏览器安装、驱动下载网络和登录状态") from None
             self.browsers[site_key] = browser
             return browser
 
@@ -163,9 +166,23 @@ class BusinessBrowsers:
             return False  # 注入式工厂不访问真实 Selenium 会话。
         previous_timeout = configure_transport(driver, 3)
         try:
-            return not driver.window_handles
+            handles = driver.window_handles
+            if not handles:
+                return True
+            try:
+                current = driver.current_window_handle
+            except NoSuchWindowException:
+                current = None
+            if current not in handles:
+                if len(handles) != 1:
+                    raise PlatformOperationError("当前业务标签页已关闭且仍有多个窗口，请在主机确认保留一个业务窗口后再开始")
+                # 仅在下一次取得业务页面时恢复唯一存活标签，不重放中断的业务动作。
+                driver.switch_to.window(handles[0])
+            return False
         except (InvalidSessionIdException, NoSuchWindowException):
             return True
+        except PlatformOperationError:
+            raise
         except Exception:
             # 无法确认会话已关闭时不新开第二个浏览器抢占同一配置。
             raise PlatformOperationError("平台浏览器连接异常，无法确认窗口状态；请检查本工具浏览器后再开始") from None

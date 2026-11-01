@@ -32,17 +32,24 @@ class GiftCatalogTests(unittest.TestCase):
             self.assertEqual(result["gift"], {"id": "000023", "name": "新礼赠Pro+套装", "aliases": ["新礼简称"]})
             self.assertEqual(GiftCatalogStore(path).read(), [original, result["gift"]])
 
-    def test_duplicate_codes_names_and_cross_aliases_never_overwrite(self):
+    def test_duplicate_codes_never_overwrite(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "gifts.json"
             store = seed(path)
             before = path.read_bytes()
-            for gift in ({"id": "0001", "name": "另一礼赠"}, {"id": "0002", "name": "原有礼赠"},
-                         {"id": "0002", "name": "新礼赠", "aliases": ["原有简称"]},
-                         {"id": "0002", "name": "原有简称"}, {"id": "000-1", "name": "新礼赠"}):
+            for gift in ({"id": "0001", "name": "另一礼赠"}, {"id": " 0001 ", "name": "原有礼赠"}):
                 with self.subTest(gift=gift), self.assertRaises(GiftCatalogConflict):
                     store.add(gift)
                 self.assertEqual(path.read_bytes(), before)
+
+    def test_shared_names_aliases_and_similar_codes_are_distinct_products(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = seed(Path(directory) / 'gifts.json')
+            for code in ('0002', '000-1', 'SKU-a', 'SKU-A'):
+                store.add({'id': code, 'name': '原有礼赠', 'aliases': ['原有简称']})
+            result = GiftCatalogStore(store.path).read()
+            self.assertEqual([gift['id'] for gift in result], ['0001', '0002', '000-1', 'SKU-a', 'SKU-A'])
+            self.assertTrue(all(gift['name'] == '原有礼赠' for gift in result))
 
     def test_invalid_values_do_not_change_file(self):
         with tempfile.TemporaryDirectory() as directory:

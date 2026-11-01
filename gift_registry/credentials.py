@@ -61,10 +61,15 @@ class CredentialStore:
             document = json.loads(self.path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return {"version": 1, "accounts": {}}
-        if (not isinstance(document, dict) or set(document) != {"version", "accounts"}
+        if (not isinstance(document, dict) or not {"version", "accounts"} <= set(document)
+                or set(document) - {"version", "accounts", "browser_headless"}
                 or type(document["version"]) is not int or document["version"] != 1
                 or not isinstance(document["accounts"], dict)):
             raise ValueError("invalid format")
+        flags = document.get('browser_headless', {})
+        if (not isinstance(flags, dict) or set(flags) - _SITES
+                or any(type(value) is not bool for value in flags.values())):
+            raise ValueError('invalid browser settings')
         for site_key, account in document["accounts"].items():
             _validate_site(site_key)
             if (not isinstance(account, dict) or set(account) != {"username", "password_dpapi"}
@@ -74,6 +79,61 @@ class CredentialStore:
             if not base64.b64decode(account["password_dpapi"], validate=True):
                 raise ValueError("invalid encrypted password")
         return document
+
+    def settings(self):
+        """不解密密码；供本机配置界面和业务浏览器读取选项。"""
+        with self._lock:
+            try:
+                document = self._read()
+                return {site: {'username': document['accounts'].get(site, {}).get('username', ''),
+                               'headless': document.get('browser_headless', {}).get(site, False)}
+                        for site in sorted(_SITES)}
+            except Exception:
+                raise CredentialStoreError('本机账号或浏览器配置格式不正确，请检查 accounts.local.json') from None
+
+    def save_browser_modes(self, flags):
+        """只改两平台显示模式，不读取明文密码或重写账号密文。"""
+        with self._lock:
+            try:
+                if not isinstance(flags, dict) or set(flags) != _SITES or any(type(v) is not bool for v in flags.values()):
+                    raise ValueError()
+                document = self._read()
+                document['browser_headless'] = dict(flags)
+                atomic_write(self.path, json.dumps(document, ensure_ascii=False, indent=2).encode('utf-8'))
+            except Exception:
+                raise CredentialStoreError('浏览器设置未保存，请检查选项及本机配置文件权限') from None
+
+    def save_settings(self, values):
+        """两平台选项一次原子保存；密码留空保留原值，改账号必须输入新密码。"""
+        with self._lock:
+            try:
+                if not isinstance(values, dict) or set(values) != _SITES:
+                    raise ValueError()
+                document = self._read()
+                flags = {}
+                for site, value in values.items():
+                    username, password = value['username'], value['password']
+                    if (not isinstance(username, str) or not isinstance(password, str)
+                            or type(value['headless']) is not bool):
+                        raise ValueError()
+                    username = username.strip()
+                    flags[site] = value['headless']
+                    if not password:
+                        if username != document['accounts'].get(site, {}).get('username', ''):
+                            raise ValueError()
+                        continue
+                    _validate_values(username, password)
+                    payload = _MAGIC + json.dumps({'site':site,'username':username,'password':password},
+                                                  ensure_ascii=False).encode('utf-8')
+                    encrypted = self._protect(payload)
+                    if not isinstance(encrypted, bytes) or not encrypted:
+                        raise ValueError()
+                    document['accounts'][site] = {'username':username,
+                        'password_dpapi':base64.b64encode(encrypted).decode('ascii')}
+                document['browser_headless'] = flags
+                atomic_write(self.path, json.dumps(document,ensure_ascii=False,indent=2).encode('utf-8'))
+            except Exception:
+                raise CredentialStoreError('保存失败：修改账号时请填写密码，并检查配置格式、文件权限和 Windows 加密服务') from None
 
     def save(self, site_key, username, password):
         _validate_site(site_key)

@@ -124,6 +124,46 @@ class BanniuReuseTests(unittest.TestCase):
         reader.driver.refresh.assert_called_once()
         self.assertEqual(button.click.call_count, 3)
 
+    def test_missing_virtual_columns_do_not_prevent_filtering(self):
+        reader, _, button, _ = self.make_reader()
+        execute = reader.driver.execute_script.side_effect
+        scrolled = []
+
+        def virtual_table(script, *args):
+            if 'gift-banniu-scroll-columns' in script:
+                self.assertEqual(button.click.call_count, 1)
+                scrolled.append(args)
+                return True
+            if 'gift-banniu-list' in script:
+                self.assertEqual(button.click.call_count, 1)
+                return {'pager': '共 0 条', 'rows': []} if scrolled else None
+            return execute(script)
+
+        reader.driver.execute_script.side_effect = virtual_table
+        self.assertEqual(reader.query_tasks('00001'), [])
+        self.assertEqual(scrolled, [(True,)])
+        reader.driver.refresh.assert_not_called()
+        button.click.assert_called_once()
+
+    def test_scroll_cannot_make_unrefreshed_filter_appear_fresh(self):
+        reader, _, _, state = self.make_reader()
+        state['fresh'] = False
+        with self.assertRaisesRegex(PlatformOperationError, '未完整刷新'):
+            reader.query_tasks('00001')
+        scripts = [args.args[0] for args in reader.driver.execute_script.call_args_list]
+        self.assertFalse(any('gift-banniu-scroll-columns' in script for script in scripts))
+        self.assertFalse(any('gift-banniu-list' in script for script in scripts))
+
+    def test_task_rows_must_settle_before_returning_the_snapshot(self):
+        reader, _, _, _ = self.make_reader()
+        execute = reader.driver.execute_script.side_effect
+        snapshots = iter([
+            {'pager': '共 1 条', 'rows': [{'task_id': task, 'order_no': '00001', 'created_at': '2026-10-28 12:00:00'}]}
+            for task in ('1', '2', '2')])
+        reader.driver.execute_script.side_effect = lambda script: (
+            next(snapshots) if 'gift-banniu-list' in script else execute(script))
+        self.assertEqual(reader.query_tasks('00001')[0]['task_id'], '2')
+
     def test_details_or_unready_list_and_different_routes_reload_once(self):
         for route_changed in (True, False):
             with self.subTest(route_changed=route_changed):

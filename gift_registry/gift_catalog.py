@@ -1,4 +1,4 @@
-"""本机礼赠清单：仅追加、校验重复匹配项并原子保存。"""
+"""本机礼赠清单：编码唯一，名称/别名允许重复，追加原子保存。"""
 
 import json
 import threading
@@ -14,7 +14,7 @@ class GiftCatalogConflict(ValueError):
 
 
 def matching_key(value):
-    # 与前端 normalizeGift 一致，避免同名、同编码或别名导致唯一匹配失效。
+    # 仅用于名称搜索与本项别名去重，不能作为商品编码身份。
     return "".join(char for char in value.lower() if char.isalnum())
 
 
@@ -69,12 +69,8 @@ class GiftCatalogStore:
             gifts = self.read()
             if len(gifts) >= 10000:
                 raise ValueError("礼赠清单最多支持 10000 项")
-            labels = {matching_key(label): existing for existing in gifts
-                      for label in (existing["id"], existing["name"], *existing.get("aliases", []))}
-            for label in (gift["id"], gift["name"], *gift["aliases"]):
-                existing = labels.get(matching_key(label))
-                if existing is not None:
-                    raise GiftCatalogConflict(f"“{label}”已用于“{existing['name']}”（{existing['id']}），请使用不同的编码、名称或别名")
+            if any(existing["id"].strip() == gift["id"] for existing in gifts):
+                raise GiftCatalogConflict("商品编码已存在，请使用不同编码；名称可以相同")
             gifts.append(gift)
             atomic_write(self.path, json.dumps(gifts, ensure_ascii=False, indent=2).encode("utf-8"))
             return {"gift": deepcopy(gift), "gifts": gifts}

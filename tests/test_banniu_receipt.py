@@ -6,7 +6,8 @@ from datetime import datetime
 from unittest.mock import Mock, patch
 
 from gift_registry.banniu_page import GIFT_COLUMNS
-from gift_registry.banniu_receipt import BanniuReceiptReader, TaskListNotReadyError, complete_task_rows, receipt_from_detail
+from gift_registry.banniu_receipt import (BanniuReceiptReader, TaskListNotReadyError, ReceiptNumberNotReadyError,
+                                        complete_task_rows, receipt_from_detail)
 from gift_registry.workflow import GiftRecord, OrderSnapshot, PlatformOperationError, RegistrationRequest, SubmissionReceipt
 
 
@@ -107,6 +108,32 @@ class ReceiptDetailTests(unittest.TestCase):
 
 
 class ReceiptPollingTests(unittest.TestCase):
+    def test_delayed_new_number_can_replace_old_number_only_on_same_matching_task(self):
+        reader = self.reader()
+        reader.query_tasks.return_value = [task()]
+        snapshots = [detail(), detail()]
+        snapshots[0]['fields']['售后单内部单号'] = BEFORE.records[0].record_id
+        reader.read_detail.side_effect = lambda *args, **kwargs: receipt_from_detail(
+            snapshots.pop(0), *args, **kwargs)
+        with patch('gift_registry.banniu_receipt.time.sleep') as sleep:
+            result = reader.wait_for_receipt(REQUEST, BEFORE, set(), SUBMITTED_AT)
+        self.assertEqual(result.created_record_ids, ('000049',))
+        sleep.assert_called_once_with(5)
+        self.assertEqual(reader.page.mock_calls, [])
+
+    def test_unusable_number_exhausts_read_budget_and_never_authenticates_or_submits(self):
+        reader = self.reader()
+        reader.authenticate = Mock()
+        reader.query_tasks.return_value = [task()]
+        reader.read_detail.side_effect = ReceiptNumberNotReadyError('旧单号')
+        with patch('gift_registry.banniu_receipt.time.sleep') as sleep:
+            with self.assertRaisesRegex(PlatformOperationError, '等待结束仍未通过核验'):
+                reader.wait_for_receipt(REQUEST, BEFORE, set(), SUBMITTED_AT)
+        self.assertEqual(reader.query_tasks.call_count, 24)
+        self.assertEqual(sleep.call_count, 23)
+        reader.authenticate.assert_not_called()
+        self.assertEqual(reader.page.mock_calls, [])
+
     def test_pending_sync_is_reread_then_success_without_resubmitting(self):
         reader = self.reader()
         reader.query_tasks.return_value = [task()]
@@ -159,8 +186,8 @@ class ReceiptPollingTests(unittest.TestCase):
             with self.subTest(rows=rows), patch("gift_registry.banniu_receipt.time.sleep") as sleep:
                 with self.assertRaisesRegex(PlatformOperationError, "未取得明确回执"):
                     reader.wait_for_receipt(REQUEST, BEFORE, {"000051"}, SUBMITTED_AT)
-            self.assertEqual(reader.query_tasks.call_count, 8)
-            self.assertEqual(sleep.call_count, 7)
+            self.assertEqual(reader.query_tasks.call_count, 24)
+            self.assertEqual(sleep.call_count, 23)
             self.assertEqual(reader.page.mock_calls, [])
 
     def test_ambiguous_new_tasks_and_mismatched_detail_stop_without_retry(self):
@@ -182,7 +209,7 @@ class ReceiptPollingTests(unittest.TestCase):
         sleep.assert_not_called()
 
     def test_polling_limits_are_validated_before_any_read(self):
-        for queries, interval in ((0, 2), (9, 2), (4, -1), (4, 6)):
+        for queries, interval in ((0, 2), (25, 2), (4, -1), (4, 6)):
             reader = self.reader()
             with self.subTest(queries=queries, interval=interval), self.assertRaises(ValueError):
                 reader.wait_for_receipt(REQUEST, BEFORE, set(), SUBMITTED_AT, queries=queries, interval=interval)
@@ -224,8 +251,9 @@ class ReceiptQueryTests(unittest.TestCase):
         field.get_attribute.return_value = ORDER
         page._visible.side_effect = lambda _, selector: [] if selector in ('.w-edit-task-dialog', '.el-loading-mask') else [field]
         page._one.side_effect = lambda selector, **_: field if selector == '#list_1891 textarea' else button
-        fresh = iter([False, True, True])
+        fresh = iter([False, True, True, True])
         snapshots = iter([{"pager": "共 1 条", "rows": [task(order_no="old-order")]},
+                          {"pager": "共 1 条", "rows": [task()]},
                           {"pager": "共 1 条", "rows": [task()]}])
         observing = False
 
@@ -289,15 +317,14 @@ class ReceiptQueryTests(unittest.TestCase):
         def execute(script):
             nonlocal initial_reads, observing
             if 'gift-registration-list-ready' in script:
-                return True
+                initial_reads += 1
+                return initial_reads > 1
             if "gift-banniu-observe" in script:
                 observing = True
             if "gift-banniu-fresh" in script:
                 return True
             if "gift-banniu-list" in script:
-                if not observing:
-                    initial_reads += 1
-                    return None if initial_reads == 1 else {"pager": "共 0 条", "rows": []}
+                self.assertTrue(observing)
                 return {"pager": "共 1 条", "rows": [task()]}
 
         def visible(_, selector):
@@ -353,7 +380,15 @@ class ReceiptQueryTests(unittest.TestCase):
 
         page._one.side_effect = one
         page.driver.execute_script.side_effect = execute
-        page._wait.side_effect = lambda predicate, _: predicate(page.driver)
+
+        def wait(predicate, message):
+            for _ in range(3):
+                result = predicate(page.driver)
+                if result:
+                    return result
+            raise AssertionError(message)
+
+        page._wait.side_effect = wait
         reader = self.query_reader(page, field)
         reader._order_filter.side_effect = lambda: (toggle.click.assert_not_called(), field)[1]
         self.assertEqual(reader.query_tasks(ORDER), [task()])

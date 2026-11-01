@@ -5,10 +5,14 @@ import os
 import time
 from copy import deepcopy
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.edge.service import Service as EdgeService
 from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.webdriver.remote.webdriver import WebDriver
 
 from .authentication import AuthenticationRequired, ENTRY_URLS, SessionAuthenticator
 from .config import DATA_DIR, Site
@@ -16,12 +20,44 @@ from .driver_shutdown import BrowserShutdownError, configure_transport, quit_own
 from .sessions import SessionStore, cookie_for_restore
 
 
+def stabilize_banniu_viewport(driver):
+    """固定工具业务页的 CSS 视口，不改变用户日常浏览器或页面业务数据。"""
+    if not isinstance(driver, WebDriver):
+        return  # 显式注入的非浏览器测试适配器。
+    driver.set_window_size(1440, 1000)
+    driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", {
+        "width": 1440, "height": 900, "deviceScaleFactor": 1, "mobile": False,
+    })
+    driver.execute_cdp_cmd("Emulation.setPageScaleFactor", {"pageScaleFactor": 1})
+
+
+def installed_edge():
+    """只选择本机安装的 Edge，不借用用户的日常浏览器配置。"""
+    for root in ('ProgramFiles(x86)', 'ProgramFiles', 'LOCALAPPDATA'):
+        base = os.environ.get(root)
+        if base:
+            path = Path(base) / 'Microsoft' / 'Edge' / 'Application' / 'msedge.exe'
+            if path.is_file():
+                return str(path)
+    raise ValueError('未找到本机 Microsoft Edge，请先安装或修复 Edge 后重试')
+
+
 def create_driver(site: Site, *, headless=False, profile=None):
     os.environ.setdefault("SE_CACHE_PATH", str(DATA_DIR / "selenium"))
     os.environ.setdefault("SE_AVOID_STATS", "true")
-    options = webdriver.ChromeOptions()
+    kind = os.environ.get('GIFT_BROWSER', 'chrome').strip().lower()
+    if kind not in ('chrome', 'edge'):
+        raise ValueError('GIFT_BROWSER 仅支持 chrome 或 edge')
+    options = webdriver.EdgeOptions() if kind == 'edge' else webdriver.ChromeOptions()
+    # 可选：U 盘副本用 GIFT_CHROME_BINARY 固定便携 Chrome 的版本，
+    # 避免 Selenium Manager 选中目标电脑上已安装的其它 Chrome。
+    binary = installed_edge() if kind == 'edge' else os.environ.get("GIFT_CHROME_BINARY", "").strip()
+    if binary:
+        if not os.path.isfile(binary):
+            raise ValueError("GIFT_CHROME_BINARY 指向的 Chrome 文件不存在")
+        options.binary_location = binary
     options.page_load_strategy = "eager"
-    profile = profile or DATA_DIR / "browser" / site.key
+    profile = profile or DATA_DIR / ("browser_edge" if kind == 'edge' else "browser") / site.key
     profile.mkdir(parents=True, exist_ok=True)
     options.add_argument(f"--user-data-dir={profile.resolve()}")
     options.add_argument("--no-first-run")
@@ -35,7 +71,12 @@ def create_driver(site: Site, *, headless=False, profile=None):
     if headless:
         options.add_argument("--headless=new")
     # 不修改浏览器指纹，不绕过验证码；Selenium Manager 自动匹配驱动。
-    driver = webdriver.Chrome(options=options)
+    driver_key = 'GIFT_EDGEDRIVER' if kind == 'edge' else 'GIFT_CHROMEDRIVER'
+    driver_path = os.environ.get(driver_key, "").strip()
+    if driver_path and not os.path.isfile(driver_path):
+        raise ValueError(f"{driver_key} 指向的驱动文件不存在")
+    factory, service = (webdriver.Edge, EdgeService) if kind == 'edge' else (webdriver.Chrome, Service)
+    driver = factory(options=options, service=service(driver_path)) if driver_path else factory(options=options)
     track_owned_browser(driver)
     configure_transport(driver, 50)
     driver.set_page_load_timeout(40)
@@ -46,6 +87,7 @@ def create_driver(site: Site, *, headless=False, profile=None):
 class SiteBrowser:
     def __init__(self, site: Site, store: SessionStore, *, authenticator=None):
         self.site = site
+        self.headless = False  # 登录助手始终使用默认可见窗口；业务管理器单独设置。
         self.store = store
         self.driver = None
         self.snapshot = None
@@ -71,7 +113,7 @@ class SiteBrowser:
             self.snapshot = self.store.load(self.site.key)
         except (OSError, ValueError):
             self.restore_warning = "旧快照无法读取，请重新登录；独立浏览器配置仍会保留。"
-        self.driver = create_driver(self.site)
+        self.driver = create_driver(self.site, headless=True) if self.headless else create_driver(self.site)
         if self.snapshot:
             self.restore(self.snapshot)
         self.navigate(ENTRY_URLS.get(self.site.key, self.site.url))

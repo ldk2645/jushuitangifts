@@ -64,7 +64,8 @@ def main():
             source = dict(line.split(None, 1) for line in source_lines if line.strip())
             assert len(source) == 31
             assert catalog == catalog_store.read()
-            assert set(source).issubset({gift['id'] for gift in catalog})
+            # example.md 是历史来源；当前清单可由用户增删，以当前目录逐项验收。
+            assert len({gift['id'] for gift in catalog}) == len(catalog)
             label_ids = {}
             for gift in catalog:
                 for label in (gift['id'], gift['name'], *gift['aliases']):
@@ -98,7 +99,7 @@ def main():
                 return [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".field-names .column-label")]
 
             def saved():
-                wait.until(lambda d: d.find_element(By.ID, "save-label").text.startswith("已保存"))
+                wait.until(lambda d: d.find_element(By.ID, "sheet-save-state").text.startswith("已保存"))
 
             def paste(text):
                 driver.execute_script("""
@@ -252,7 +253,7 @@ def main():
             fake_operations = FakeOperations({"00011": "no_new"})
             jobs.operations = fake_operations
             driver.find_element(By.ID, "start-registration").click()
-            wait.until(lambda d: d.find_element(By.ID, "metric-success").text == "1" and d.find_element(By.ID, "metric-failed").text == "2")
+            wait.until(lambda d: d.find_element(By.ID, "metric-success").get_property("textContent") == "1" and d.find_element(By.ID, "metric-failed").get_property("textContent") == "2")
             assert len(fake_operations.submissions) == 2
             assert [request.order_no for request in fake_operations.submissions] == ["00010", "00011"]
             assert all(order_no != "00009" for _, order_no in fake_operations.trace)
@@ -339,6 +340,8 @@ def main():
                         if line.strip() and not line.lstrip().startswith("#")]
             assert len(examples) == 2 and all(len(example) == 2 for example in examples)
             assert [example[0] for example in examples] == ["0000000000000000001", "0000000000000000002"]
+            # 回到首行再粘贴，避免上一步滚动位置使首行落在固定表头下方。
+            driver.execute_script("document.querySelector('#grid-scroll').scrollTop = 0")
             control("order_no").click()
             paste("\n".join("\t".join(example) for example in examples))
             saved()

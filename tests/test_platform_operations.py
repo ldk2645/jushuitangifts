@@ -1,11 +1,54 @@
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from gift_registry.platform_operations import SeleniumOperations
 from gift_registry.workflow import GiftRecord, OrderSnapshot, PlatformOperationError, Recipient, RegistrationRequest, SubmissionReceipt
 
 
 class PlatformOperationsTests(unittest.TestCase):
+    def test_browser_acquisition_failure_is_proven_not_submitted_and_not_retried(self):
+        from gift_registry.workflow import RegistrationNotSubmittedError
+        for exc in (PlatformOperationError('浏览器不可用'), RuntimeError('private-token')):
+            with self.subTest(kind=type(exc).__name__):
+                self.browsers.driver.reset_mock()
+                self.browsers.driver.side_effect = exc
+                with self.assertRaises(RegistrationNotSubmittedError) as error:
+                    self.operations.submit_registration(self.request, self.before)
+                self.assertNotIn('private-token', str(error.exception))
+                self.browsers.driver.assert_called_once_with('banniu')
+                self.form.submit.assert_not_called()
+
+    def test_retry_baseline_change_stops_before_banniu(self):
+        with self.assertRaisesRegex(PlatformOperationError, "基线"):
+            self.operations.check_retry_safety(self.request, self.before, {"before_record_ids": ["another"]})
+        self.browsers.driver.assert_not_called()
+
+    def test_retry_existing_banniu_task_or_query_error_preserves_adapter_and_never_submits(self):
+        self.operations._banniu()
+        for result in ([{"task_id": "test-old"}], PlatformOperationError("合成查询异常")):
+            with patch("gift_registry.banniu_receipt.BanniuReceiptReader") as reader:
+                if isinstance(result, Exception):
+                    reader.return_value.query_tasks.side_effect = result
+                else:
+                    reader.return_value.query_tasks.return_value = result
+                with self.assertRaises(PlatformOperationError):
+                    self.operations.check_retry_safety(self.request, self.before, {})
+                self.assertIs(self.operations._form_page, self.form)
+                self.form.submit.assert_not_called()
+
+    def test_retry_empty_banniu_result_creates_fresh_adapter_using_same_driver(self):
+        self.operations._banniu()
+        with patch("gift_registry.banniu_receipt.BanniuReceiptReader") as reader:
+            reader.return_value.query_tasks.return_value = []
+            self.assertTrue(self.operations.check_retry_safety(self.request, self.before, {"before_record_ids": ["old"]}))
+            reader.return_value.query_tasks.assert_called_once_with(self.request.order_no)
+        self.assertIsNone(self.operations._form_page)
+        self.form.submit.assert_not_called()
+        self.browsers.close.assert_not_called()
+        self.operations.submit_registration(self.request, self.before)
+        self.form.submit.assert_called_once_with(self.request, self.before, require_distinct_gifts=True)
+        self.assertIsNone(self.operations._retry_authorized_task)
+
     def test_replacement_driver_rebuilds_adapter_without_replaying_submit(self):
         from types import SimpleNamespace
         browsers = Mock()

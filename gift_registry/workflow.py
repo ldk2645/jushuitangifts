@@ -2,7 +2,7 @@
 
 import unicodedata
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Callable, Protocol
 
 
@@ -136,17 +136,26 @@ def verify_new_records(request, before, after, receipt):
     validate_receipt(receipt)
     if not before.found or not receipt.accepted:
         return False, "原订单或班牛提交状态未确认", []
+    return verify_added_records(request, before, after, receipt.created_record_ids, receipt.reference)
+
+
+def verify_added_records(request, before, after, expected_ids=(), reference=""):
+    """首次核验及延迟复核共用差异检查；调用方另行核对本次提交依据。"""
+    validate_snapshot(before, request.order_no)
+    validate_snapshot(after, request.order_no)
+    if not before.found:
+        return False, "原订单基线不存在", []
     if not after.found:
         return False, "复查未找到原订单", []
     previous_ids = {record.record_id for record in before.records}
     added = [record for record in after.records if record.record_id not in previous_ids]
-    if receipt.created_record_ids:
-        expected_ids = set(receipt.created_record_ids)
+    if expected_ids:
+        expected_ids = set(expected_ids)
         if {record.record_id for record in added} != expected_ids:
             # 回执之外的新增记录同样属于本次复查范围，不能过滤掉后按其余记录判成功。
             return False, "聚水潭新增记录与本次提交回执不一致", []
-    if receipt.reference:
-        if any(record.reference != receipt.reference for record in added):
+    if reference:
+        if any(record.reference != reference for record in added):
             return False, "聚水潭新增记录的关联凭证与本次提交不一致", []
     if not added:
         return False, "聚水潭未发现本次登记的新增信息", []
@@ -169,8 +178,9 @@ class Workflow:
     def __init__(self, operations: PlatformOperations):
         self.operations = operations
 
-    def execute(self, row, catalog, report: Callable):
+    def execute(self, row, catalog, report: Callable, before_submit=None):
         stage = "querying"
+        submission_status = "not_submitted"
         try:
             request = request_from_row(row, catalog)
             if request.recipient is not None:
@@ -180,19 +190,30 @@ class Workflow:
             before = self.operations.query_order(request.order_no)
             validate_snapshot(before, request.order_no)
             if not before.found:
-                report("failed", detail="聚水潭未找到该订单；未进行班牛登记")
+                report("failed", detail="聚水潭未找到该订单；未进行班牛登记", submission_status=submission_status)
                 return
+            if before_submit is not None:
+                stage = "checking_retry"
+                before_submit(request, before)
             stage = "submitting"
+            submission_status = "uncertain"
             # 必须先持久化已尝试标记，再调用有副作用的平台提交。
-            report("submitting", detail="正在班牛登记并提交", submit_attempted=True, attempts=1,
-                   evidence={"before_record_ids": [record.record_id for record in before.records]})
-            receipt = self.operations.submit_registration(request, before)
+            report("submitting", detail="正在班牛登记并提交", submit_attempted=True, attempts=1, submission_status=submission_status,
+                   evidence={"before_record_ids": [record.record_id for record in before.records],
+                             "before_snapshot": asdict(before)})
+            tracked = getattr(self.operations, "submit_registration_tracked", None)
+            receipt = (tracked(request, before, lambda: report("submitting", detail="班牛提交按钮已点击，正在读取回执",
+                                                              evidence={"submit_clicked": True}))
+                       if callable(tracked) else self.operations.submit_registration(request, before))
             validate_receipt(receipt)
             if receipt.accepted is not True:
-                report("failed", detail="班牛未确认提交成功，请人工核查；不会自动重试登记")
+                report("failed", detail="班牛未确认提交成功，请人工核查；不会自动重试登记",
+                       evidence={"receipt": asdict(receipt)})
                 return
             stage = "verifying"
-            report("verifying", detail="班牛已提交，正在聚水潭复查新增信息", reference=receipt.reference)
+            submission_status = "submitted"
+            report("verifying", detail="班牛已提交，正在聚水潭复查新增信息", reference=receipt.reference,
+                   submission_status=submission_status, evidence={"receipt": asdict(receipt)})
             # 可选适配器只做有界的只读复查；不会再次调用班牛提交方法。
             wait_for_verification = getattr(self.operations, "wait_for_verification", None)
             after = (wait_for_verification(request, before, receipt) if callable(wait_for_verification)
@@ -202,8 +223,10 @@ class Workflow:
                    evidence={"verified_record_ids": identifiers})
         except Exception as exc:
             label = {"querying": "聚水潭首次查询失败，未进行班牛登记", "submitting": "班牛提交异常，结果可能不确定，请人工核查",
+                     "checking_retry": "失败订单重登安全核查未通过，未进行班牛登记",
                      "verifying": "聚水潭复查失败，未能确认新增信息"}[stage]
             if stage == 'submitting' and isinstance(exc, RegistrationNotSubmittedError):
                 label = '班牛登记未提交'
+                submission_status = "not_submitted"
             reason = str(exc) if isinstance(exc, PlatformOperationError) else type(exc).__name__
-            report("failed", detail=f"{label}（{reason}）；不会自动重试登记")
+            report("failed", detail=f"{label}（{reason}）；不会自动重试登记", submission_status=submission_status)
