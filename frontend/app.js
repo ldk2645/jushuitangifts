@@ -144,8 +144,17 @@ function createColumnResizer(field) {
   return handle;
 }
 
+function newRowId() {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  // 普通局域网 HTTP 不提供 randomUUID；getRandomValues 仍可生成随机 UUID v4。
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 15) | 64;
+  bytes[8] = (bytes[8] & 63) | 128;
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 function newRow() {
-  return { id: crypto.randomUUID(), order_no: "", gift: "", gift_ids: [], change_address: false,
+  return { id: newRowId(), order_no: "", gift: "", gift_ids: [], change_address: false,
     recipient_name: "", phone: "", address: "" };
 }
 function normalizeGift(text) { return text.toLowerCase().replace(/[^\p{L}\p{N}]/gu, ""); }
@@ -354,16 +363,37 @@ function changed() {
 }
 async function api(path, options = {}) {
   const changesState = options.method === "POST" && (path.startsWith("/api/registrations/") || path.startsWith("/api/rows/"));
+  const writing = options.method === "POST" || options.method === "PUT";
   if (changesState) stateEpoch++;
-  const response = await fetch(path, { ...options, headers: { "Content-Type": "application/json", "X-CSRF-Token": token, ...(options.headers || {}) } });
-  let result;
-  try { result = await response.json(); } catch { throw new Error("工作台连接中断，请确认程序正在运行"); }
-  if (changesState) stateEpoch++;
-  if (!response.ok) {
-    if (path === "/api/rows" && response.status === 409 && !["registration_not_started", "gift_catalog_conflict", "gift_group_conflict"].includes(result.code)) conflict = true;
-    throw new Error(result.error || "请求失败，请重试");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), writing ? 60000 : 15000);
+  try {
+    const response = await fetch(path, { ...options, signal: controller.signal, headers: { "Content-Type": "application/json", "X-CSRF-Token": token, ...(options.headers || {}) } });
+    let result;
+    try { result = await response.json(); } catch { throw new Error("工作台连接中断，请确认程序正在运行；操作结果请先查看状态"); }
+    if (!response.ok) {
+      if (response.status === 403 && result.code === "csrf_expired") {
+        // 服务已明确拒绝写入：只更新连接凭据，保留编辑；由用户再次明确操作。
+        try {
+          const config = await api("/api/config");
+          token = config.token;
+        } catch { throw new Error("无法恢复工作台连接，未保存内容仍在页面中，请保留页面稍后再试"); }
+        throw new Error("工作台连接已更新，本次操作未执行。未保存内容已保留，请再次点击保存或操作按钮");
+      }
+      if (path === "/api/rows" && response.status === 409 && !["registration_not_started", "gift_catalog_conflict", "gift_group_conflict"].includes(result.code)) conflict = true;
+      throw new Error(result.error || "请求失败，请检查连接和访问密码");
+    }
+    return result;
+  } catch (error) {
+    if (controller.signal.aborted || error instanceof TypeError) {
+      throw new Error(writing ? "连接中断或请求超时，操作是否完成尚未确认；请保留页面并先查看状态，不会自动再次发送"
+        : "无法连接工作台，正在等待恢复；当前显示为最后已知状态");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    if (changesState) stateEpoch++;
   }
-  return result;
 }
 async function saveNow(manual = false) {
   clearTimeout(saveTimer);
@@ -1433,6 +1463,7 @@ async function refreshExecutionStates() {
     if (initialized) {
       const epoch = stateEpoch;
       const result = await api("/api/registrations/status");
+      document.getElementById("connection-notice").hidden = true;
       document.getElementById("shutdown-notice").hidden = !result.server_stopping;
       if (epoch !== stateEpoch || hostManaging || starting || retrySubmitting) return;
       rowStates = result.row_states;
@@ -1458,7 +1489,10 @@ async function refreshExecutionStates() {
       updateSummary();
       scheduleColumnSizing();
     }
-  } catch { /* 保留最后已知结果；轮询只读状态，永不发起登记请求。 */ }
+  } catch {
+    // 保留最后已知结果；恢复连接只读状态，永不发起登记请求。
+    document.getElementById("connection-notice").hidden = false;
+  }
   finally { setTimeout(refreshExecutionStates, document.hidden ? 5000 : 1500); }
 }
 

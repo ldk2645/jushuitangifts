@@ -121,12 +121,12 @@ def build(destination, chrome_relative=None, driver=None):
 2. 首次在新电脑使用，点“平台登录”或双击 login.bat，手动完成两平台登录及验证，保存并关闭助手。
    若需账号密码自动登录，双击 accounts.bat 在目标电脑输入，密码不回显、由该 Windows 用户加密。
 3. 已包含 Python 3.12、Tk、Selenium；不使用电脑上的 Python，不必运行 setup.ps1。
-   默认使用目标电脑安装的 Microsoft Edge；首次运行或 Edge 更新后需联网匹配驱动。
-   仅显式制作旧版 Chrome 包时才使用随包 Chrome；详见 portable.json 的 browser。
+   本包浏览器：{'随包 Chrome 与配套驱动，不需在线下载浏览器' if chrome else '目标电脑安装的 Microsoft Edge；首次运行或更新后需联网匹配驱动'}。
+   浏览器路径和驱动配置见 portable.json；平台登录及业务访问仍需要网络。
 4. 双击 stop.bat 请求正常关闭，等服务窗口和业务浏览器完全退出，再安全弹出 U 盘。
 5. 可移动整个 gifts 目录、改变盘符。请保持 runtime、data、config 与项目文件的相对位置。
 
-已带入制作时的草稿、礼品分组和完整防重复任务历史。订单号跳过、失败保护规则保持不变。
+已带入制作时的草稿、礼品分组和完整防重复任务历史。按订单号＋整组礼品编码防重，失败保护规则保持不变。
 未复制原电脑的账号密码、Cookie、Chrome 用户配置及局域网设置，它们不能跨 Windows 用户解密。
 便携版默认仅本机访问；局域网共享无需域名。运行 lan-setup.bat 选择目标电脑网络，再以管理员身份运行 allow-lan.bat，重启工作台。
 详见“局域网使用说明.txt”；lan-info.bat 查看其他设备访问地址和六位密码。

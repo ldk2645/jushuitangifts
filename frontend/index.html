@@ -15,6 +15,9 @@
     <button id="login-button" class="login-button" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8 4H4v12h4m4-10 4 4-4 4m-5-4h9"/></svg>平台登录</button>
   </header>
   <main class="workspace">
+    <aside id="connection-notice" class="network-notice" role="status" hidden>
+      <div><strong>与主机的连接暂时中断</strong><p>正在尝试恢复状态读取。当前显示为最后已知结果，未保存内容仍保留在页面中；恢复连接后不会自动补发保存或登记请求。请先查看最新状态再操作。</p></div>
+    </aside>
     <aside id="shutdown-notice" class="network-notice" role="status" hidden>
       <div><strong>工作台正在关闭</strong><p>当前可查看进度，主机仍可取消排队。暂停保存和新登记，剩余任务完成后自动退出；未保存的编辑请先复制保留。</p></div>
     </aside>

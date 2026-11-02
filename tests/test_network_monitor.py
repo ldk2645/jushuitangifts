@@ -179,6 +179,16 @@ class NetworkMonitorTests(unittest.TestCase):
                 probe_network()
         self.assertNotIn('private-', str(caught.exception))
 
+    def test_private_physical_lan_without_default_gateway_is_shareable(self):
+        data = [{'adapter': 'physical', 'name': 'isolated-lan', 'ip': '192.168.1.91',
+                 'prefix': 24, 'gateway': ''}]
+        result = subprocess.CompletedProcess([], 0, stdout=json.dumps(data), stderr='')
+        with patch('gift_registry.network_monitor.subprocess.run', return_value=result) as run:
+            connection = probe_network()[0]
+        self.assertEqual(connection['ip'], '192.168.1.91')
+        self.assertEqual(connection['gateway'], '')
+        self.assertNotIn('if (-not $gateways.Count) { continue }', run.call_args.args[0][-1])
+
     def test_failed_query_and_invalid_output_never_return_a_partial_network(self):
         outcomes = [subprocess.CalledProcessError(1, ['private-command'], stderr='private-output'),
                     subprocess.CompletedProcess([], 0, stdout='not-json', stderr=''),

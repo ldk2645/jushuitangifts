@@ -69,7 +69,12 @@ def main():
                 return driver.find_element(By.CSS_SELECTOR, '#grid-body tr[data-id] [data-field="order_no"] input')
 
             def saved(driver):
-                WebDriverWait(driver, 10).until(lambda d: d.find_element(By.ID, 'save-label').text.startswith('已保存'))
+                try:
+                    WebDriverWait(driver, 10).until(lambda d: d.find_element(By.ID, 'sheet-save-state').text.startswith('已保存'))
+                except Exception:
+                    # 此脚本仅有合成行，输出 UI 状态用于定位事件或同步失败，不输出连接凭据。
+                    print(driver.execute_script("return {label:document.getElementById('save-label').textContent,toast:document.getElementById('toast').textContent,version,savedVersion,conflict,active,editing,first:rows[0]};"))
+                    raise
 
             def edit(driver, value):
                 field = order_field(driver)
@@ -91,6 +96,9 @@ def main():
             second.get(url)
             loaded(second)
             assert order_field(second).get_attribute('value') == '00000123'
+            # 第一端先进入编辑，保留旧 revision；否则后台同步会合法吸收第二端修改，
+            # 随后再编辑不应发生冲突，不能把这种正常同步误报成失败。
+            ActionChains(first).double_click(order_field(first)).perform()
             edit(second, '00000124')
             saved(second)
             edit(first, '00000125')

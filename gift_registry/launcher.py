@@ -86,8 +86,7 @@ def supervise(port, notify, cancelled, *, root=ROOT, health=read_health,
             current = health(port)
             if current is not None and not current.get('stopping'):
                 expected = settings()
-                if (current.get('lan_enabled') != expected.enabled or current.get('lan_ip') != expected.lan_ip
-                        or current.get('domain') != expected.domain):
+                if not expected.matches_health(current):
                     raise StartupError('工作台已运行，但共享配置已变化；请正常关闭旧工作台后重开。')
                 notify('ready', f'http://127.0.0.1:{port}/')
                 return

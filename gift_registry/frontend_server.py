@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import URLError
 from urllib.parse import urlsplit
-from urllib.request import urlopen
+from urllib.request import ProxyHandler, build_opener
 
 from .access_log import AccessLog, request_path
 from .config import DATA_DIR, ROOT
@@ -216,7 +216,7 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
             path = urlsplit(self.path).path
             if path == '/api/health':
                 self.send(200, {'app': 'gift_registry', 'lan_enabled': network.enabled,
-                                'domain': network.domain, 'lan_ip': network.lan_ip,
+                                'domain': network.domain, 'lan_ip': network.lan_ip, 'subnet': network.subnet,
                                 'stopping': self.server.stopping})
                 return
             if not self.permitted():
@@ -229,7 +229,7 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
                                 "workflow_configured": jobs.configured, "automatic_registration_retry": False,
                                 "workflow_configuration_detail": getattr(jobs.operations, "configuration_detail", ""),
                                 'network_settings_available': network.enabled and self.is_local_access() and network_monitor is not None,
-                                'platform_login_available': self.is_local_client()})
+                                'platform_login_available': self.is_local_access()})
             elif path == '/api/network/status':
                 if not self.is_local_access() or network_monitor is None:
                     self.send(403, {'error': '网络提醒仅在主机本地工作台查看'})
@@ -278,9 +278,12 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
                 return
             origins = self.headers.get_all('Origin', [])
             if (len(origins) > 1 or (origins and origins[0] != 'http://' + self.headers.get('Host', ''))
-                    or self.headers.get('Sec-Fetch-Site') == 'cross-site'
-                    or not secrets.compare_digest(self.headers.get("X-CSRF-Token", ""), token)):
+                    or self.headers.get('Sec-Fetch-Site') == 'cross-site'):
                 self.send(403, {"error": "请求校验失败，请刷新页面"})
+                return
+            if not secrets.compare_digest(self.headers.get("X-CSRF-Token", "").encode('utf-8'), token.encode('ascii')):
+                # 在任何写入之前拒绝；前端可只读取得新凭据，但不能自动重放此请求。
+                self.send(403, {"error": "页面连接凭据已失效，本次操作未执行", "code": "csrf_expired"})
                 return
             path = urlsplit(self.path).path
             if self.command == "POST" and path == "/api/shutdown":
@@ -297,7 +300,7 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
                                 "code": "server_stopping"})
                 return
             if self.command == "POST" and path == "/api/login":
-                if not self.is_local_client():
+                if not self.is_local_access():
                     self.send(403, {'error': '平台登录和验证码请在主机上维护；其他设备可填写草稿及开始登记'})
                     return
                 pythonw = Path(sys.executable).with_name("pythonw.exe")
@@ -409,12 +412,11 @@ def run(port=8765, open_browser=True, *, network=None, access_password=None):
     except OSError:
         # 重复启动时复用已运行的同一项目，而非打开更多服务进程。
         try:
-            with urlopen(url + "api/health", timeout=2) as response:
+            with build_opener(ProxyHandler({})).open(url + "api/health", timeout=2) as response:
                 health = json.load(response)
                 if health.get("app") != "gift_registry":
                     raise RuntimeError(f"端口 {port} 已被其他程序占用，请使用 --port 指定其他端口")
-                if (health.get('lan_enabled') != network.enabled or health.get('domain') != network.domain
-                        or health.get('lan_ip') != network.lan_ip):
+                if not network.matches_health(health):
                     raise RuntimeError('工作台已在运行，但共享配置不同；请正常关闭旧工作台后重新启动')
         except (URLError, ValueError) as exc:
             raise RuntimeError(f"无法启动本地前端，端口 {port} 不可用") from exc

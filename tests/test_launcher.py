@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from gift_registry import launcher
+from gift_registry import frontend_server, launcher
 from gift_registry.network import NetworkSettings
 from gift_registry.registration import RegistrationQueue
 
@@ -97,3 +97,38 @@ class LauncherTests(unittest.TestCase):
             launcher.supervise(8765,Mock(),threading.Event(),health=Mock(return_value=HEALTH),spawn=spawn,
                                settings=lambda:NetworkSettings(True,'192.168.2.10','192.168.2.0/24'))
         spawn.assert_not_called()
+
+    def test_changed_or_unreported_subnet_cannot_reuse_running_lan_service(self):
+        settings = NetworkSettings(True, '192.168.2.10', '192.168.2.0/24')
+        current = {**HEALTH, 'lan_enabled': True, 'lan_ip': settings.lan_ip}
+        for old_subnet in (None, '192.168.0.0/16'):
+            spawn = Mock()
+            with self.subTest(subnet=old_subnet), self.assertRaisesRegex(launcher.StartupError, '共享配置'):
+                launcher.supervise(8765, Mock(), threading.Event(), spawn=spawn,
+                                   health=Mock(return_value={**current, 'subnet': old_subnet}),
+                                   settings=lambda: settings)
+            spawn.assert_not_called()
+        notify = Mock()
+        launcher.supervise(8765, notify, threading.Event(),
+                           health=Mock(return_value={**current, 'subnet': settings.subnet}),
+                           settings=lambda: settings)
+        notify.assert_called_once_with('ready', 'http://127.0.0.1:8765/')
+
+    def test_direct_start_health_check_bypasses_proxy_and_checks_subnet(self):
+        settings = NetworkSettings(True, '192.168.2.10', '192.168.2.0/24')
+        for subnet in ('192.168.0.0/16', settings.subnet):
+            response = Mock()
+            response.__enter__ = Mock(return_value=response)
+            response.__exit__ = Mock(return_value=None)
+            response.read.return_value = ('{"app":"gift_registry","lan_enabled":true,'
+                                          '"domain":"","lan_ip":"192.168.2.10","subnet":"' + subnet + '"}').encode()
+            opener = Mock()
+            opener.open.return_value = response
+            with patch.object(frontend_server, 'make_server', side_effect=OSError('synthetic occupied port')), \
+                 patch.object(frontend_server, 'build_opener', return_value=opener) as factory:
+                if subnet == settings.subnet:
+                    frontend_server.run(8765, open_browser=False, network=settings)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, '共享配置'):
+                        frontend_server.run(8765, open_browser=False, network=settings)
+            self.assertEqual(factory.call_args.args[0].proxies, {})

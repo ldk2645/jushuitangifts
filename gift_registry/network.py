@@ -52,6 +52,13 @@ class NetworkSettings:
         # 保留主机回环访问；请求端另行严格校验客户端子网与 Host。
         return '0.0.0.0' if self.enabled else '127.0.0.1'
 
+    def matches_health(self, health):
+        """共享子网也是运行配置；旧 LAN 服务未报告子网时不能认定已加载新配置。"""
+        return (health.get('lan_enabled') == self.enabled
+                and health.get('lan_ip') == self.lan_ip
+                and health.get('domain') == self.domain
+                and (not self.enabled or health.get('subnet') == self.subnet))
+
     def allows_client(self, address):
         try:
             client = ipaddress.ip_address(address)

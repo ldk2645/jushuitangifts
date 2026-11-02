@@ -30,16 +30,15 @@ $result = @(foreach ($adapter in $physical) {
     $gateways = @($properties.GatewayAddresses | Where-Object {
         $_.Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork
     })
-    if (-not $gateways.Count) { continue }
     $profile = @(Get-NetConnectionProfile -InterfaceIndex $adapter.ifIndex -ErrorAction SilentlyContinue)
     foreach ($address in $properties.UnicastAddresses) {
         if ($address.Address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { continue }
         [PSCustomObject]@{
             adapter = [string]$adapter.InterfaceGuid
-            name = [string]$profile[0].Name
+            name = $(if ($profile.Count) { [string]$profile[0].Name } else { [string]$adapter.Name })
             ip = [string]$address.Address.ToString()
             prefix = [int]$address.PrefixLength
-            gateway = [string]$gateways[0].Address.ToString()
+            gateway = $(if ($gateways.Count) { [string]$gateways[0].Address.ToString() } else { '' })
         }
     }
 })
@@ -91,8 +90,11 @@ def normalize_connections(connections):
         adapter, name = item['adapter'], item['name']
         if not all(isinstance(value, str) and len(value) <= 256 for value in (adapter, name)):
             raise ValueError('Invalid network identity')
+        gateway = item['gateway']
+        if not isinstance(gateway, str):
+            raise ValueError('Invalid network gateway')
         normalized.append({'adapter': adapter.lower(), 'name': name, 'ip': str(address),
-                           'subnet': str(subnet), 'gateway': str(ipaddress.IPv4Address(item['gateway']))})
+                           'subnet': str(subnet), 'gateway': str(ipaddress.IPv4Address(gateway)) if gateway else ''})
     return sorted(normalized, key=lambda entry: (entry['adapter'], entry['ip']))
 
 

@@ -281,7 +281,35 @@ class LanHTTPTests(unittest.TestCase):
 
     def test_health_discloses_no_token_or_business_data(self):
         with self.request('/api/health', auth=False) as response:
-            self.assertEqual(set(json.load(response)), {'app', 'lan_enabled', 'domain', 'lan_ip', 'stopping'})
+            data = json.load(response)
+            self.assertEqual(set(data), {'app', 'lan_enabled', 'domain', 'lan_ip', 'subnet', 'stopping'})
+            self.assertEqual(data['subnet'], SETTINGS.subnet)
+
+    def test_stale_page_token_rejects_writes_before_creating_tasks(self):
+        headers = {'X-CSRF-Token': 'previous-process-token', 'Origin': 'http://' + self.host}
+        for path, method, body in (('/api/rows', 'PUT', {'revision': 0, 'rows': [self.row()]}),
+                                   ('/api/registrations/start', 'POST', {'revision': 0})):
+            error = self.assert_status(403, path, method=method, data=body, headers=headers)
+            self.assertEqual(json.load(error)['code'], 'csrf_expired')
+        self.assertEqual(self.store.read()['revision'], 0)
+        self.assertEqual(list(self.jobs.directory.glob('*.json')), [])
+        # 合法同源请求重新取得凭据后仍须通过原来的 revision 校验。
+        headers['X-CSRF-Token'] = self.config()['token']
+        with self.request('/api/rows', method='PUT', data={'revision': 0, 'rows': [self.row()]}, headers=headers):
+            pass
+        self.assertEqual(self.store.read()['revision'], 1)
+
+    def test_cross_origin_stale_token_does_not_offer_connection_renewal(self):
+        error = self.assert_status(403, '/api/rows', method='PUT', data={'revision': 0, 'rows': []},
+                                   headers={'Origin': 'http://evil.test', 'X-CSRF-Token': 'stale'})
+        self.assertNotIn('code', json.load(error))
+
+    def test_domain_entry_cannot_launch_host_login_even_on_local_machine(self):
+        self.assertFalse(self.config()['platform_login_available'])
+        with patch('gift_registry.frontend_server.subprocess.Popen') as spawn:
+            self.assert_status(403, '/api/login', method='POST',
+                               headers={'X-CSRF-Token': self.config()['token']})
+        spawn.assert_not_called()
 
     def test_duplicate_host_headers_are_rejected(self):
         connection = HTTPConnection('127.0.0.1', self.server.server_port, timeout=3)

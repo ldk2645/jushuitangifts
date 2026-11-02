@@ -81,7 +81,7 @@ def main():
         from gift_registry.network_monitor import probe_network
         connections = probe_network()
         if not connections:
-            print('没有检测到带网关的物理内网连接，请先连接目标局域网。')
+            print('没有检测到可共享的物理内网连接，请先连接目标局域网。')
             return
         for index, item in enumerate(connections, 1):
             print(f"{index}. {item['name']}  IP {item['ip']}  子网 {item['subnet']}")
