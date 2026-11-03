@@ -233,8 +233,9 @@ class LanHTTPTests(unittest.TestCase):
         return error.exception
 
     def row(self):
+        config = self.config()
         return {'id': 'synthetic-row', 'order_no': '00001', 'gift': '合成礼品', 'gift_ids': ['000SKU'],
-                'change_address': False, 'recipient_name': '', 'phone': '', 'address': ''}
+                'change_address': False, 'selection_scope': {'group_id': '', 'group_revision': config['gift_groups']['revision'], 'catalog_version': config['catalog_version']}}
 
     def test_unauthorized_clients_cannot_read_any_draft_config_or_static_page(self):
         for path in ('/', '/api/config', '/api/rows', '/api/gifts', '/api/registrations/status', '/app.js'):
@@ -356,7 +357,9 @@ class LanHTTPTests(unittest.TestCase):
             pass
         self.assert_status(409, '/api/rows', method='PUT', data={'revision': 0, 'rows': []}, headers=headers)
         with self.request('/api/rows') as response:
-            self.assertEqual(json.load(response)['rows'], [self.row()])
+            saved_rows = json.load(response)['rows']
+            self.assertEqual(saved_rows[0]['gift_selection']['gift_ids'], self.row()['gift_ids'])
+            self.assertEqual({k: saved_rows[0][k] for k in self.row()}, self.row())
         with self.request('/api/registrations/start', method='POST', data={'revision': 1}, headers=headers) as response:
             first = json.load(response)
         with self.request('/api/registrations/start', method='POST', data={'revision': 1}, headers=headers) as response:

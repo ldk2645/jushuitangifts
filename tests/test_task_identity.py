@@ -25,7 +25,7 @@ CATALOG = [{'id': code, 'name': '合成同名礼品'} for code in ('001-A', '001
 
 def row(identifier='r1', codes=('001-A',), order='SYNTHETIC-ORDER'):
     return {'id': identifier, 'order_no': order, 'gift': '、'.join('合成同名礼品' for _ in codes),
-            'gift_ids': list(codes), 'change_address': False, 'recipient_name': '', 'phone': '', 'address': ''}
+            'gift_ids': list(codes), 'change_address': False}
 
 
 class TaskIdentityTests(unittest.TestCase):

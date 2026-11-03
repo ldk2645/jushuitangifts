@@ -23,6 +23,15 @@ def seed(path):
 
 
 class GiftCatalogTests(unittest.TestCase):
+    def test_read_ignores_historical_blank_alias_without_rewriting_or_losing_extra_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'gifts.json'
+            path.write_text(json.dumps([{'id': 'SYN-01', 'name': '合成礼品', 'aliases': ['', ' ', '合成别名'], 'extra': 'keep'}]), encoding='utf-8')
+            before = path.read_bytes()
+            self.assertEqual(GiftCatalogStore(path).read()[0]['aliases'], ['合成别名'])
+            self.assertEqual(GiftCatalogStore(path).read()[0]['extra'], 'keep')
+            self.assertEqual(path.read_bytes(), before)
+
     def test_add_preserves_original_and_survives_new_store(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "gifts.json"
@@ -111,6 +120,10 @@ class GiftCatalogTests(unittest.TestCase):
                         self.assertEqual(json.load(response)["gifts"][-1], gift)
                 row = {"id": "new-row", "order_no": "00012345678901234567890", "gift": gift["name"], "gift_ids": [gift["id"]],
                        "change_address": False, "recipient_name": "", "phone": "", "address": ""}
+                with urlopen(url + '/api/config') as response:
+                    current = json.load(response)
+                row['selection_scope'] = {'group_id': '', 'group_revision': current['gift_groups']['revision'],
+                                          'catalog_version': current['catalog_version']}
                 with post("/api/rows", {"revision": 0, "rows": [row]}, method="PUT") as response:
                     self.assertEqual(json.load(response)["revision"], 1)
                 with post("/api/registrations/start", {"revision": 1}) as response:

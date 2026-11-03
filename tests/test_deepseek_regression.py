@@ -211,7 +211,7 @@ class QueueReliabilityRegressionTests(unittest.TestCase):
     def test_repeated_manual_hold_without_baseline_is_idempotent(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
             operations = FakeOperations()
-            baseline = OrderSnapshot("00009", True, (GiftRecord("old", ("original-sku",)),))
+            baseline = OrderSnapshot("00009", True, (GiftRecord("old", ("original-sku",), gift_quantities=(1,) * len(("original-sku",))),))
             with RegistrationQueue(folder, operations=operations) as jobs:
                 first = jobs.record_external_submission(sample(), load_gifts(), baseline)
                 second = jobs.record_external_submission(sample(), load_gifts(), None)
@@ -236,7 +236,7 @@ class VerificationRegressionTests(unittest.TestCase):
         return request_from_row(sample(), load_gifts())
 
     def before(self):
-        return OrderSnapshot("00009", True, (GiftRecord("old", ("original-sku",)),))
+        return OrderSnapshot("00009", True, (GiftRecord("old", ("original-sku",), gift_quantities=(1,) * len(("original-sku",))),))
 
     def new_gift(self, record_id, gifts=GIFTS, reference="", quantities=(1, 1)):
         return GiftRecord(record_id, gifts, reference=reference, gift_quantities=quantities)
@@ -288,14 +288,14 @@ class VerificationRegressionTests(unittest.TestCase):
                 record = self.new_gift("new", gifts=gifts, quantities=(1,) * len(gifts))
                 success, detail, identifiers = verify_new_records(
                     request, before, OrderSnapshot("00009", True, (old, record)),
-                    SubmissionReceipt(True))
+                    SubmissionReceipt(True, created_record_ids=("new",)))
                 self.assertFalse(success)
                 self.assertIn("礼品", detail)
                 self.assertEqual(identifiers, [])
         record = self.new_gift("new")
         success, _, identifiers = verify_new_records(
             request, before, OrderSnapshot("00009", True, (old, record)),
-            SubmissionReceipt(True))
+            SubmissionReceipt(True, created_record_ids=("new",)))
         self.assertTrue(success)
         self.assertEqual(identifiers, ["new"])
 

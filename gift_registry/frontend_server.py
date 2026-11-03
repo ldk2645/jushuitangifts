@@ -22,9 +22,10 @@ from .maintenance import MaintenanceService
 from .sessions import atomic_write
 from .registration import RegistrationQueue, RegistrationStartError
 from .network import NetworkSettings, authorized, valid_access_password
+from .selection import SelectionPolicy, SelectionConflict, catalog_version, migrate_legacy_selections
 
 WEB_DIR = ROOT / "frontend"
-FIELDS = {"order_no": 200, "gift": 500, "recipient_name": 100, "phone": 60, "address": 2000}
+FIELDS = {"order_no": 200, "gift": 500}
 MAX_ROWS = 10000
 
 
@@ -95,13 +96,23 @@ def validate_rows(rows):
         if not isinstance(identifier, str) or not 1 <= len(identifier) <= 80 or identifier in identifiers:
             raise ValueError("行标识不正确或重复")
         identifiers.add(identifier)
-        if type(row.get("change_address")) is not bool:
+        if type(row.get("change_address", False)) is not bool:
             raise ValueError("是否改地址必须为是或否")
-        record = {"id": identifier, "change_address": row["change_address"]}
+        record = {"id": identifier, "change_address": row.get("change_address", False)}
         gift_ids = row.get("gift_ids", [])
         if not isinstance(gift_ids, list) or len(gift_ids) > 100 or any(not isinstance(item, str) or len(item) > 80 for item in gift_ids):
             raise ValueError("礼品选项格式不正确")
         record["gift_ids"] = list(dict.fromkeys(gift_ids))
+        unmatched = row.get('gift_unmatched', [])
+        if not isinstance(unmatched, list) or len(unmatched) > 100 or any(not isinstance(v, str) or len(v) > 500 for v in unmatched):
+            raise ValueError('未匹配礼品格式不正确')
+        if 'gift_unmatched' in row:
+            record['gift_unmatched'] = unmatched
+        for key in ('selection_scope', 'gift_selection'):
+            if key in row:
+                if not isinstance(row[key], dict) or len(json.dumps(row[key])) > 50000:
+                    raise ValueError('礼品选择依据格式不正确')
+                record[key] = row[key]
         for key, limit in FIELDS.items():
             value = row.get(key, "")
             if not isinstance(value, str) or len(value) > limit:
@@ -116,6 +127,7 @@ class RowStore:
     def __init__(self, path):
         self.path = Path(path)
         self.lock = threading.RLock()
+        self.selection_policy = None
         self.document = {"revision": 0, "rows": []}
         if self.path.exists():
             document = json.loads(self.path.read_text(encoding="utf-8"))
@@ -132,6 +144,8 @@ class RowStore:
         with self.lock:
             if type(revision) is not int or revision != self.document["revision"]:
                 raise RevisionConflict("表格已在其他窗口更新，请先复制当前编辑内容，再刷新页面")
+            if self.selection_policy is not None:
+                records = self.selection_policy.validate(records, self.document['rows'])
             document = {"revision": revision + 1, "rows": records}
             atomic_write(self.path, json.dumps(document, ensure_ascii=False, indent=2).encode("utf-8"))
             self.document = document
@@ -147,6 +161,7 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
     catalog_store = catalog if catalog is not None else GiftCatalogStore()
     catalog_store.read()
     group_store = groups if groups is not None else GiftGroupStore(catalog_store.path.with_name("gift_groups.local.json"), catalog_store)
+    row_store.selection_policy = SelectionPolicy(catalog_store, group_store)
     token = secrets.token_urlsafe(32)
 
     class Handler(BaseHTTPRequestHandler):
@@ -211,6 +226,12 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
             return self.headers.get('Host', '').lower() in local_hosts
 
         def do_GET(self):
+            try:
+                self.read_request()
+            except (ValueError, OSError):
+                self.send(503, {'error': '配置暂不可用，请主机检查目录维护事务或文件；现有任务历史保留'})
+
+        def read_request(self):
             if not self.permitted(authenticate=False):
                 return
             path = urlsplit(self.path).path
@@ -223,8 +244,10 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
                 return
             if path == "/api/config":
                 from . import __version__
-                self.send(200, {"app": "gift_registry", "frontend_version": 9, "version": __version__, "token": token, "gifts": catalog_store.read(),
-                                "gift_groups": group_store.read(),
+                gifts, group_config, generation = row_store.selection_policy.context()
+                self.send(200, {"app": "gift_registry", "frontend_version": 10, "version": __version__, "token": token, "gifts": gifts,
+                                "catalog_version": generation,
+                                "gift_groups": group_config,
                                 "host_actions_available": self.is_local_access(),
                                 "workflow_configured": jobs.configured, "automatic_registration_retry": False,
                                 "workflow_configuration_detail": getattr(jobs.operations, "configuration_detail", ""),
@@ -236,7 +259,8 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
                     return
                 self.send(200, network_monitor.snapshot())
             elif path == "/api/gifts":
-                self.send(200, {"gifts": catalog_store.read()})
+                gifts, group_config, generation = row_store.selection_policy.context()
+                self.send(200, {"gifts": gifts, "catalog_version": generation, "gift_groups": group_config})
             elif path == "/api/gift-groups":
                 self.send(200, group_store.read())
             elif path == "/api/maintenance/status":
@@ -337,7 +361,9 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
                 if acknowledging_network:
                     self.send(200, network_monitor.acknowledge(document.get('change_id')))
                 elif adding_gift:
-                    self.send(201, catalog_store.add(document))
+                    result = catalog_store.add(document)
+                    result['catalog_version'] = catalog_version(result['gifts'])
+                    self.send(201, result)
                 elif updating_groups:
                     self.send(200, group_store.update(document))
                 elif managing or cancelling:
@@ -367,6 +393,8 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
                     self.send(200, row_store.write(document.get("revision"), document.get("rows")))
             except GiftCatalogConflict as exc:
                 self.send(409, {"error": str(exc), "code": "gift_catalog_conflict"})
+            except SelectionConflict as exc:
+                self.send(409, {"error": str(exc), "code": "selection_conflict"})
             except GroupConflict as exc:
                 self.send(409, {"error": str(exc), "code": "gift_group_conflict"})
             except RegistrationStartError as exc:
@@ -388,6 +416,7 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
     try:
         # 必须先取得端口独占，再恢复任务；重复启动不能修改运行中任务的状态。
         jobs = queue if queue is not None else RegistrationQueue(DATA_DIR / "registration_jobs")
+        migrate_legacy_selections(row_store.document['rows'], catalog_store.read(), jobs)
         from .host_management import HostManagement
         management = HostManagement(row_store, jobs)
         server.registration_queue = jobs

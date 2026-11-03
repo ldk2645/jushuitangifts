@@ -82,25 +82,26 @@ def _verified_success(item):
 
 
 def load_gifts():
-    catalog = json.loads((ROOT / "config" / "gifts.json").read_text(encoding="utf-8"))
-    seen = set()
-    for gift in catalog:
-        if not isinstance(gift.get("id"), str) or gift["id"] in seen or not gift.get("name"):
-            raise ValueError("礼品配置中的标识或名称不正确")
-        seen.add(gift["id"])
-    return catalog
+    from .gift_catalog import GiftCatalogStore
+    return GiftCatalogStore(ROOT / 'config/gifts.json').read()
+
+
+def legacy_row_signature(row):
+    return json.dumps([row["id"], row["order_no"], row.get("gift", ""), row.get("gift_ids", []),
+                       row.get("change_address", False), row.get("recipient_name", ""), row.get("phone", ""), row.get("address", "")],
+                      ensure_ascii=False, separators=(",", ":"))
 
 
 def row_signature(row):
-    return json.dumps([row["id"], row["order_no"], row["gift"], row.get("gift_ids", []),
-                       row["change_address"], row["recipient_name"], row["phone"], row["address"]],
+    return json.dumps([row["id"], row["order_no"].strip(), sorted(set(row.get("gift_ids", []))),
+                       row.get("change_address", False), row.get("gift_unmatched", [])],
                       ensure_ascii=False, separators=(",", ":"))
 
 
 def business_key(row):
-    content = [row["order_no"].strip(), sorted(set(row.get("gift_ids", []))), row["change_address"]]
-    if row["change_address"]:
-        content += [row["recipient_name"].strip(), row["phone"].strip(), row["address"].strip()]
+    content = [row["order_no"].strip(), sorted(set(row.get("gift_ids", []))), row.get("change_address", False)]
+    if row.get("change_address", False):
+        content += [row.get("recipient_name", "").strip(), row.get("phone", "").strip(), row.get("address", "").strip()]
     return hashlib.sha256(json.dumps(content, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
@@ -117,7 +118,7 @@ def registration_rows(rows, gifts):
     names = {gift["id"]: gift["name"] for gift in gifts}
     records, problems = [], []
     for index, row in enumerate(rows, 2):
-        if not (row["order_no"].strip() or row["gift"].strip() or row["change_address"]):
+        if not (row["order_no"].strip() or row["gift"].strip() or row.get("change_address", False)):
             continue
         missing = []
         if not row["order_no"].strip():
@@ -125,14 +126,17 @@ def registration_rows(rows, gifts):
         ids = row.get("gift_ids", [])
         if not ids or any(identifier not in names for identifier in ids):
             missing.append("有效礼品选项")
-        elif row["gift"] != "、".join(names[identifier] for identifier in ids):
+        elif row.get("gift_unmatched") or (not row.get("gift_selection") and row["gift"] != "、".join(names[identifier] for identifier in ids)):
             missing.append("未匹配的礼品需重新选择")
-        if row["change_address"]:
-            missing.extend(label for field, label in (("recipient_name", "姓名"), ("phone", "电话"), ("address", "地址"))
-                           if not row[field].strip())
+        if row.get("change_address", False):
+            missing.append("旧草稿请求改地址，本版本不支持；请核对原意后删除该行并新建原地址订单")
         if missing:
             problems.append(f"第 {index} 行：{'、'.join(missing)}")
-        records.append(deepcopy(row))
+        record = deepcopy(row)
+        record.setdefault('change_address', False)
+        for field in ('recipient_name', 'phone', 'address'):
+            record.pop(field, None)
+        records.append(record)
     if problems:
         raise ValueError("请先完善草稿；" + "；".join(problems[:5]))
     if not records:
@@ -607,8 +611,8 @@ class RegistrationQueue:
                 receipt = SubmissionReceipt(**receipt)
                 validate_receipt(receipt)
                 success, detail, identifiers = verify_new_records(request, before, after, receipt)
-            elif evidence.get("submit_clicked") is True and record["item"].get("submission_status") != "not_submitted":
-                success, detail, identifiers = verify_added_records(request, before, after)
+            elif evidence.get("submit_clicked") is True:
+                raise PlatformOperationError("缺少有效回执，新增记录无法唯一关联本次任务；保留待人工核查，禁止重提")
             else:
                 raise PlatformOperationError("缺少本次提交依据或此前明确未提交，不能自动确认成功")
         except Exception as exc:
@@ -689,8 +693,8 @@ class RegistrationQueue:
                     return deepcopy(item)
             else:
                 # 隐藏的旧地址草稿不属于本次业务，也不保存到新增人工记录中。
-                if not record["change_address"]:
-                    record.update(recipient_name="", phone="", address="")
+                for field in ('recipient_name', 'phone', 'address'):
+                    record.pop(field, None)
                 job = {"version": 2, "id": "external-" + key[:16], "created_at": now(),
                        "rows": [record], "gift_catalog": deepcopy(catalog), "items": [self._item(record)]}
                 item = job["items"][0]

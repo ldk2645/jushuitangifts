@@ -35,6 +35,7 @@ def seed_snapshot(folder, *, version=ABSENT, state="waiting_for_workflow"):
     else:
         document["state"] = state
     document["updated_at"] = "2020-01-01T00:00:00+00:00"
+    document['rows'] = [sample()]  # Preserve the actual old schema, including empty hidden fields.
     document["retained_metadata"] = "must-remain"
     path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
     return path
