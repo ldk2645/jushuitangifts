@@ -19,12 +19,12 @@ class BrowserAuthenticationTests(unittest.TestCase):
         self.browser.driver = Mock()
         self.browser.capture = Mock(return_value={"cookie_count": 0, "last_saved": "00:00:00"})
 
-    def test_open_uses_protected_entry_and_retains_window_for_manual_auth(self):
+    def test_fresh_banniu_opens_original_login_entry_and_retains_window_for_manual_auth(self):
         self.auth.ensure_authenticated.side_effect = AuthenticationRequired("需要人工验证码")
         driver = Mock()
         with patch("gift_registry.browser.create_driver", return_value=driver):
             self.browser.open()
-        driver.get.assert_called_once_with(ENTRY_URLS["banniu"])
+        driver.get.assert_called_once_with(SITES[1].url)
         self.assertIs(self.browser.driver, driver)
         driver.quit.assert_not_called()
         self.assertEqual(self.browser.auth_warning, "需要人工验证码")

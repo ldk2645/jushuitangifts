@@ -16,6 +16,7 @@ from urllib.request import ProxyHandler, build_opener
 
 from .access_log import AccessLog, request_path
 from .config import DATA_DIR, ROOT
+from .edition import DEFAULT_PORT, EDITION
 from .gift_catalog import GiftCatalogConflict, GiftCatalogStore
 from .gift_groups import GiftGroupStore, GroupConflict
 from .maintenance import MaintenanceService
@@ -152,7 +153,7 @@ class RowStore:
             return {"revision": document["revision"]}
 
 
-def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None, access_password=None,
+def make_server(port=DEFAULT_PORT, *, store=None, queue=None, catalog=None, network=None, access_password=None,
                 network_monitor=None, access_log=None, groups=None):
     network = network if network is not None else NetworkSettings()
     if network.enabled and not valid_access_password(access_password):
@@ -236,7 +237,7 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
                 return
             path = urlsplit(self.path).path
             if path == '/api/health':
-                self.send(200, {'app': 'gift_registry', 'lan_enabled': network.enabled,
+                self.send(200, {'app': 'gift_registry', 'edition': EDITION, 'lan_enabled': network.enabled,
                                 'domain': network.domain, 'lan_ip': network.lan_ip, 'subnet': network.subnet,
                                 'stopping': self.server.stopping})
                 return
@@ -245,7 +246,7 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
             if path == "/api/config":
                 from . import __version__
                 gifts, group_config, generation = row_store.selection_policy.context()
-                self.send(200, {"app": "gift_registry", "frontend_version": 11, "version": __version__, "token": token, "gifts": gifts,
+                self.send(200, {"app": "gift_registry", "edition": EDITION, "frontend_version": 11, "version": __version__, "token": token, "gifts": gifts,
                                 "catalog_version": generation,
                                 "gift_groups": group_config,
                                 "host_actions_available": self.is_local_access(),
@@ -428,7 +429,7 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
     return server
 
 
-def run(port=8765, open_browser=True, *, network=None, access_password=None):
+def run(port=DEFAULT_PORT, open_browser=True, *, network=None, access_password=None):
     network = network if network is not None else NetworkSettings()
     url = f"http://127.0.0.1:{port}/"
     from .network_monitor import NetworkMonitor
@@ -443,7 +444,7 @@ def run(port=8765, open_browser=True, *, network=None, access_password=None):
         try:
             with build_opener(ProxyHandler({})).open(url + "api/health", timeout=2) as response:
                 health = json.load(response)
-                if health.get("app") != "gift_registry":
+                if health.get("app") != "gift_registry" or health.get('edition') != EDITION:
                     raise RuntimeError(f"端口 {port} 已被其他程序占用，请使用 --port 指定其他端口")
                 if not network.matches_health(health):
                     raise RuntimeError('工作台已在运行，但共享配置不同；请正常关闭旧工作台后重新启动')

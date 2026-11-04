@@ -334,7 +334,7 @@ class HostHTTPTests(unittest.TestCase):
     def test_host_can_list_retry_and_download_but_post_requires_csrf(self):
         with self.request("/api/config") as response:
             config = json.load(response)
-        self.assertEqual(config["version"], "1.3.0")
+        self.assertEqual(config["version"], "1.3.0-ry.1")
         self.assertTrue(config["host_actions_available"])
         with self.request("/api/registrations/failures") as response:
             failure = json.load(response)["failures"][0]
@@ -370,7 +370,7 @@ class HostHTTPTests(unittest.TestCase):
     def test_groups_are_readable_on_lan_but_only_host_can_mutate_with_csrf(self):
         with self.request("/api/config") as response:
             token = json.load(response)["token"]
-        body = {"revision": 0, "action": "assign", "gift_ids": ["SKU-A"], "group_ids": ["xiaomi-phone"]}
+        body = {"revision": 0, "action": "assign", "gift_ids": ["SKU-A"], "group_ids": ["honor"]}
         def put(headers):
             return self.opener.open(Request(self.url + "/api/gift-groups", method="PUT",
                                            data=json.dumps(body).encode(), headers=headers), timeout=5)
@@ -380,12 +380,12 @@ class HostHTTPTests(unittest.TestCase):
         headers = {"Authorization": authorization(), "X-CSRF-Token": token,
                    "Host": f"{SETTINGS.domain}:{self.server.server_port}", "X-Forwarded-For": "127.0.0.1"}
         with self.request("/api/gift-groups", headers=headers) as response:
-            self.assertEqual(len(json.load(response)["groups"]), 2)
+            self.assertEqual(len(json.load(response)["groups"]), 1)
         with self.assertRaises(HTTPError) as denied:
             put(headers)
         self.assertEqual(denied.exception.code, 403)
         with put({"X-CSRF-Token": token, "Origin": self.url}) as response:
-            self.assertEqual(json.load(response)["memberships"], {"SKU-A": ["xiaomi-phone"]})
+            self.assertIn('honor', json.load(response)["memberships"]["SKU-A"])
         with self.assertRaises(HTTPError) as stale:
             put({"X-CSRF-Token": token})
         self.assertEqual(stale.exception.code, 409)

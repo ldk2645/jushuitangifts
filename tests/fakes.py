@@ -22,7 +22,7 @@ class FakeOperations:
             raise TimeoutError("test only")
         if mode == "missing":
             return OrderSnapshot(order_no, False)
-        old = GiftRecord("old-" + order_no, ("N01B0L1LE91VZS8S01", "N01B0J1JDK1V007H08"), gift_quantities=(1,) * len(("N01B0L1LE91VZS8S01", "N01B0J1JDK1V007H08")))
+        old = GiftRecord("old-" + order_no, ("N00A090GEU0DXM6O02", "N00A0L1LE90DXM5001"), gift_quantities=(1,) * len(("N00A090GEU0DXM6O02", "N00A0L1LE90DXM5001")))
         request = self.requests.get(order_no)
         if request is None or mode == "no_new":
             return OrderSnapshot(order_no, True, (old,))

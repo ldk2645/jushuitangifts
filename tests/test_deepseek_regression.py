@@ -16,10 +16,10 @@ from gift_registry.registration import RegistrationQueue, business_key, load_gif
 from gift_registry.workflow import (GiftRecord, OrderSnapshot, SubmissionReceipt,
                                     request_from_row, verify_new_records)
 
-GIFTS = ("N01B0L1LE91VZS8S01", "N01B0J1JDK1V007H08")
+GIFTS = ("N00A090GEU0DXM6O02", "N00A0L1LE90DXM5001")
 GIFT_NAMES = {
-    "N01B0L1LE91VZS8S01": "米家保温杯口袋版",
-    "N01B0J1JDK1V007H08": "小米小背包",
+    "N00A090GEU0DXM6O02": "赠品保温杯",
+    "N00A0L1LE90DXM5001": "赠品小背包",
 }
 
 

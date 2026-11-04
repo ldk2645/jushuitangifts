@@ -12,6 +12,7 @@ from urllib.request import ProxyHandler, build_opener
 import webbrowser
 
 from .config import ROOT
+from .edition import DEFAULT_PORT, EDITION, APP_NAME
 from .network import load_network
 
 
@@ -23,7 +24,7 @@ def read_health(port):
     try:
         with build_opener(ProxyHandler({})).open(f'http://127.0.0.1:{port}/api/health', timeout=2) as response:
             result = json.loads(response.read(4096))
-        if not isinstance(result, dict) or result.get('app') != 'gift_registry':
+        if not isinstance(result, dict) or result.get('app') != 'gift_registry' or result.get('edition') != EDITION:
             raise StartupError(f'端口 {port} 被其他服务占用，请检查后再启动。')
         return result
     except (HTTPError, ValueError):
@@ -112,17 +113,17 @@ def supervise(port, notify, cancelled, *, root=ROOT, health=read_health,
         # 关闭等待窗口只取消等待，不终止任何工作台或业务浏览器。
 
 
-def run(port=8765):
+def run(port=DEFAULT_PORT):
     import tkinter as tk
     from tkinter import ttk
 
     window = tk.Tk()
-    window.title('礼赠工作台 · 启动')
+    window.title(APP_NAME + ' · 启动')
     window.geometry('570x245')
     window.resizable(False, False)
     frame = ttk.Frame(window, padding=24)
     frame.pack(fill='both', expand=True)
-    ttk.Label(frame, text='正在打开礼赠工作台', font=('Microsoft YaHei UI', 16, 'bold')).pack(anchor='w')
+    ttk.Label(frame, text='正在打开' + APP_NAME, font=('Microsoft YaHei UI', 16, 'bold')).pack(anchor='w')
     message = tk.StringVar(value='正在检查运行状态……')
     ttk.Label(frame, textvariable=message, wraplength=520, justify='left',
               font=('Microsoft YaHei UI', 10)).pack(anchor='w', pady=18)

@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from gift_registry.catalog_transaction import _no_links
+from gift_registry.edition import original_installation_path
 
 
 def inspect(port=18765):
@@ -21,7 +22,7 @@ def inspect(port=18765):
     }.items()}
     for name, path in paths.items():
         resolved = _no_links(path).resolve()
-        if not resolved.is_relative_to(root) or any(resolved == p or resolved.is_relative_to(p) for p in protected):
+        if not resolved.is_relative_to(root) or original_installation_path(resolved):
             raise ValueError('Development path is not isolated: ' + name)
     for key in ('SE_CACHE_PATH', 'GIFT_CHROMEDRIVER', 'GIFT_EDGEDRIVER'):
         if os.environ.get(key) and not Path(os.environ[key]).resolve().is_relative_to(root):

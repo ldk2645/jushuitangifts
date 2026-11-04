@@ -6,7 +6,10 @@ import argparse
 import hashlib
 import json
 import shutil
+import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from gift_registry.edition import original_installation_path
 
 
 def adapt(value):
@@ -27,8 +30,8 @@ def prepare(source, destination):
         if path.is_symlink() or path.is_junction(): raise ValueError('回滚复制禁止链接/junction')
     if not source.is_dir() or (source / 'server.pid').exists():
         raise ValueError('源数据不存在或工作台仍有运行标记；请正常停机并排空队列后再准备')
-    for root in (Path(r'D:\UserData\Desktop\NL'), Path(r'E:\gifts')):
-        if destination == root or destination.is_relative_to(root): raise ValueError('本工具不部署或写入生产目录/U 盘')
+    if original_installation_path(destination):
+        raise ValueError('本工具不部署或写入原项目目录/U 盘')
     before = {p.relative_to(source).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
               for p in source.rglob('*') if p.is_file()}
     shutil.copytree(source, destination)

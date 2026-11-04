@@ -235,6 +235,7 @@ class BatchBrowserReuseTests(unittest.TestCase):
                 query_factory=lambda _: SimpleNamespace(query_order=fake.query_order),
                 form_factory=lambda _: SimpleNamespace(submit=fake.submit_registration),
                 verification_interval=0)
+            operations.configured = True  # 合成平台回归，独立于真实荣耀入口核对。
             catalog = [{'id': 'SKU-A', 'name': '合成礼品'}]
 
             def row(order, identifier=None):

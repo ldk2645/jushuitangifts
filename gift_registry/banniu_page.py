@@ -12,9 +12,10 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 
 from .workflow import PlatformOperationError, Recipient, RegistrationNotSubmittedError, RegistrationRequest, validate_snapshot
+from .edition import BANNIU_URL, BANNIU_TITLE
 
 
-BANNIU_REGISTRATION_URL = "https://work.bytenew.com/app.html#/applet/appNew/projectNew/54119/1883"
+BANNIU_REGISTRATION_URL = BANNIU_URL
 GIFT_COLUMNS = ("退换补类型", "商家编码", "货品名称", "退换补商品金额", "数量")
 
 # 已在真实班牛任务和聚水潭同编码商品中核对的名称；只适用于此 SKU，不做模糊放行。
@@ -33,7 +34,7 @@ _REGISTRATION_LIST_READY = """
 const visible=e=>e.getClientRects().length && getComputedStyle(e).visibility!=='hidden' && Number(getComputedStyle(e).opacity)>0;
 const shown=selector=>[...document.querySelectorAll(selector)].filter(visible);
 const buttons=shown('button.edit-task-button-btn').filter(e=>e.textContent.trim()==='新建');
-if(shown('div.title.el-dropdown-selfdefine').filter(e=>e.textContent.trim()==='聚水潭赠品补发-融合').length!==1 ||
+if(shown('div.title.el-dropdown-selfdefine').filter(e=>e.textContent.trim()==='聚水谭赠品补发—荣耀').length!==1 ||
    buttons.length!==1 || buttons[0].disabled || shown('.vxe-table').length!==1 ||
    shown('.task-details,.worksheet-main-details-back,.w-edit-task-dialog,.el-loading-mask').length) return false;
 const button=buttons[0], r=button.getBoundingClientRect();
@@ -261,9 +262,9 @@ class BanniuPage:
                 return 'none'
             if len(forms) != 1 or forms[0] != root:
                 return 'preserved'
-            if self._value('#col_1891 textarea') not in ('', request.order_no):
+            if self._value('#col_27724 textarea') not in ('', request.order_no):
                 return 'preserved'
-            selected = (self._selected_gifts() if self._visible(root, '#col_1915 .children-box-body > .el-table') else [])
+            selected = (self._selected_gifts() if self._visible(root, '#col_27748 .children-box-body > .el-table') else [])
             count = len(selected)
             if not gifts_match(selected, request.gift_ids[:count], request.gift_names[:count]):
                 return 'preserved'
@@ -291,7 +292,7 @@ class BanniuPage:
             return False
         forms = self._visible(self.driver, '.w-edit-task-dialog')
         if (len(forms) != 1 or forms[0] != root or self.driver.current_url != BANNIU_REGISTRATION_URL
-                or self._value('#col_1891 textarea') != request.order_no
+                or self._value('#col_27724 textarea') != request.order_no
                 or not gifts_match(self._selected_gifts(), request.gift_ids, request.gift_names)):
             return False
         if self.driver.execute_script("""
@@ -368,26 +369,26 @@ class BanniuPage:
         return snapshot["rows"], table_records(snapshot["headers"], snapshot["values"])
 
     def _selected_gifts(self):
-        return self._table("#col_1915 .children-box-body > .el-table")[1]
+        return self._table("#col_27748 .children-box-body > .el-table")[1]
 
     def _close_search(self):
-        panels = self._visible(self._dialog(), "#col_1915 .child-search-search-task")
+        panels = self._visible(self._dialog(), "#col_27748 .child-search-search-task")
         if panels:
             if len(panels) != 1:
                 raise PlatformOperationError("班牛礼品搜索结果区域不唯一，未继续填写")
             self._click_once(self._one(":scope > .icon-guanbi", root=panels[0]))
-            self._wait(lambda _: not self._visible(self._dialog(), "#col_1915 .child-search-search-task"),
+            self._wait(lambda _: not self._visible(self._dialog(), "#col_27748 .child-search-search-task"),
                        "班牛礼品搜索结果未关闭，未继续填写")
 
     def _add_gift(self, gift_id, gift_name, expected_ids, expected_names):
         self._close_search()
-        if self._value("#col_1915 .child-search-search-select input") != "商家编码":
+        if self._value("#col_27748 .child-search-search-select input") != "商家编码":
             raise PlatformOperationError("班牛礼品搜索方式不是商家编码，未继续填写")
-        self._set_text("#col_1915 .child-search-search-condition input", gift_id)
-        self._click_once(self._one("#col_1915 .child-search-search-condition button", root=self._dialog(), text="筛选"))
+        self._set_text("#col_27748 .child-search-search-condition input", gift_id)
+        self._click_once(self._one("#col_27748 .child-search-search-condition button", root=self._dialog(), text="筛选"))
 
         def first_matching(_):
-            rows, values = self._table("#col_1915 .child-search-search-task-table > .el-table")
+            rows, values = self._table("#col_27748 .child-search-search-task-table > .el-table")
             if not rows or values[0]["商家编码"] != gift_id or not _gift_name_matches(gift_id, values[0]['货品名称'], gift_name):
                 return False
             return rows[0]
@@ -398,34 +399,42 @@ class BanniuPage:
                    "班牛已选礼品、数量或金额与本次请求不一致，未继续填写")
 
     def _address_matches(self, address):
-        parts = [self._value(f'#col_1921 input[placeholder="选择{level}"]') for level in ("省", "市", "区")]
+        parts = [self._value(f'#col_27754 input[placeholder="选择{level}"]') for level in ("省", "市", "区")]
         if not all(parts):
             return False
-        streets = self._visible(self._dialog(), '#col_1921 input[placeholder="选择街道"]')
+        streets = self._visible(self._dialog(), '#col_27754 input[placeholder="选择街道"]')
         if streets:
             if len(streets) != 1:
                 return False
             parts.append(streets[0].get_attribute("value") or "")
-        detail = self._value('#col_1921 textarea[placeholder="输入详细地址"]')
+        detail = self._value('#col_27754 textarea[placeholder="输入详细地址"]')
         return bool(detail) and _normalize("".join(parts) + detail) == _normalize(address)
 
     def _fill_address(self, recipient):
-        self._set_text('#col_1921 input[placeholder="自动识别地址"]', recipient.address).send_keys(Keys.TAB)
+        self._set_text('#col_27754 input[placeholder="自动识别地址"]', recipient.address).send_keys(Keys.TAB)
         self._wait(lambda _: self._address_matches(recipient.address),
                    "班牛未完整识别新地址，省市区及详细地址不能与输入核对一致")
-        self._set_text("#col_1924 textarea", recipient.name)
-        self._set_text("#col_1925 textarea", recipient.phone)
+        self._set_text("#col_27757 textarea", recipient.name)
+        self._set_text("#col_27758 textarea", recipient.phone)
+
+    def _validate_honor_context(self, *, require_platform=False):
+        if (not self._radio_selected('col_27771', '能良移动')
+                or self._value('#col_27777 input').strip() != '荣耀'):
+            raise PlatformOperationError('班牛公司或品牌不是能良移动／荣耀，未继续登记')
+        if require_platform and not self._value('#col_27776 input').strip():
+            raise PlatformOperationError('班牛订单平台尚未回填，未提交，请核对订单拉取结果')
 
     def _validate_prepared(self, request):
-        if (self._value("#col_1891 textarea") != request.order_no or not self._value("#col_1892 textarea").strip()
-                or self._value("#col_1913 input") != "赠品补发"
-                or not self._radio_selected("col_1887", "补发")
-                or not self._radio_selected("col_1890", "非原单改地址" if request.recipient else "非原单原地址")
-                or not self._radio_selected("col_1926", "是")
+        self._validate_honor_context(require_platform=True)
+        if (self._value("#col_27724 textarea") != request.order_no or not self._value("#col_27725 textarea").strip()
+                or self._value("#col_27746 input") != "赠品补发"
+                or not self._radio_selected("col_27720", "补发")
+                or not self._radio_selected("col_27723", "非原单改地址" if request.recipient else "非原单原地址")
+                or not self._radio_selected("col_27759", "是")
                 or not gifts_match(self._selected_gifts(), request.gift_ids, request.gift_names)):
             raise PlatformOperationError("班牛表单最终核对不一致，未提交")
-        if request.recipient and (self._value("#col_1924 textarea") != request.recipient.name
-                                  or self._value("#col_1925 textarea") != request.recipient.phone
+        if request.recipient and (self._value("#col_27757 textarea") != request.recipient.name
+                                  or self._value("#col_27758 textarea") != request.recipient.phone
                                   or not self._address_matches(request.recipient.address)):
             raise PlatformOperationError("班牛新收件信息最终核对不一致，未提交")
 
@@ -470,37 +479,38 @@ class BanniuPage:
         locate = lambda: self._one("button.edit-task-button-btn", text="新建")
         self._click_once(locate(), resolve=locate)
         root = self._dialog()
-        if self._value("#col_1891 textarea").strip():
+        if self._value("#col_27724 textarea").strip():
             raise PlatformOperationError("班牛新建表单已有订单号，未覆盖原内容")
         self._track_form(root, request)
+        self._validate_honor_context()
         self._prepare_step = "选择补发类型"
-        self._choose_radio("col_1887", "补发")
-        self._choose_radio("col_1890", "非原单改地址" if request.recipient else "非原单原地址")
+        self._choose_radio("col_27720", "补发")
+        self._choose_radio("col_27723", "非原单改地址" if request.recipient else "非原单原地址")
         self._prepare_step = "输入订单并拉单"
-        self._send_keys(self._set_text("#col_1891 textarea", request.order_no), Keys.ENTER)
+        self._send_keys(self._set_text("#col_27724 textarea", request.order_no), Keys.ENTER)
 
         def order_loaded(_):
-            column = self._field("#col_1891")
+            column = self._field("#col_27724")
             loaded = [element for element in column.find_elements(By.XPATH, ".//*[normalize-space(.)='已拉取最新数据']")
                       if element.is_displayed()]
-            return bool(loaded) and bool(self._value("#col_1892 textarea").strip()) and self._value("#col_1891 textarea") == request.order_no
+            return bool(loaded) and bool(self._value("#col_27725 textarea").strip()) and self._value("#col_27724 textarea") == request.order_no
 
         self._wait(order_loaded, "班牛未确认拉取到该订单的最新数据，未继续填写",
                    timeout=self.order_load_timeout)
         if self._selected_gifts():
             raise PlatformOperationError("班牛新建表单已有商品明细，未覆盖原内容")
         self._prepare_step = "选择问题类型"
-        locate = lambda: self._field("#col_1913 input")
+        locate = lambda: self._field("#col_27746 input")
         self._click_once(locate(), resolve=locate)
         self._click_once(self._one('.el-select-dropdown__item[title="赠品补发"]'))
-        self._wait(lambda _: self._value("#col_1913 input") == "赠品补发", "班牛问题类型未生效，未继续填写")
+        self._wait(lambda _: self._value("#col_27746 input") == "赠品补发", "班牛问题类型未生效，未继续填写")
         for index, (gift_id, gift_name) in enumerate(zip(request.gift_ids, request.gift_names), 1):
             self._prepare_step = "添加礼品"
             self._add_gift(gift_id, gift_name, request.gift_ids[:index], request.gift_names[:index])
         self._close_search()
         if request.recipient:
             self._fill_address(request.recipient)
-        self._choose_radio("col_1926", "是")
+        self._choose_radio("col_27759", "是")
         self._validate_prepared(request)
 
     def submit(self, request, before, *, require_empty_baseline=False, require_distinct_gifts=False, on_submitted=None):

@@ -3,13 +3,15 @@
 import time
 
 from .business_browser import BusinessBrowsers
+from .edition import BANNIU_VERIFIED
 from .jushuitan_page import JushuitanPage
 from .workflow import PlatformOperationError, RegistrationNotSubmittedError, validate_snapshot, verify_new_records
 
 
 class SeleniumOperations:
-    configured = True
-    configuration_detail = "Selenium 查询、单次登记及新增核验已接入"
+    configured = BANNIU_VERIFIED
+    configuration_detail = ("荣耀班牛页面字段已核对，使用 Selenium 单次登记及新增核验" if BANNIU_VERIFIED else
+                            "荣耀班牛工作表字段尚待实际页面核对，当前可整理草稿，登记暂未启用。请运行 verify-honor.bat 完成只读检查。")
 
     def __init__(self, *, browsers=None, query_factory=JushuitanPage,
                  form_factory=None, verification_queries=4, verification_interval=2,

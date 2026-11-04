@@ -12,7 +12,7 @@ from gift_registry.workflow import (GiftRecord, OrderSnapshot, PlatformOperation
 
 
 def sample(order="00009", identifier="row-1"):
-    return {"id": identifier, "order_no": order, "gift": "米家保温杯口袋版、小米小背包", "gift_ids": ["N01B0L1LE91VZS8S01", "N01B0J1JDK1V007H08"],
+    return {"id": identifier, "order_no": order, "gift": "赠品保温杯、赠品小背包", "gift_ids": ["N00A090GEU0DXM6O02", "N00A0L1LE90DXM5001"],
             "change_address": False, "recipient_name": "测试姓名", "phone": "0013800000000", "address": "测试地址"}
 
 
@@ -80,7 +80,7 @@ class WorkflowTests(unittest.TestCase):
         request = request_from_row({**sample(), "change_address": False}, load_gifts())
         self.assertIsNone(request.recipient)
         self.assertEqual(request.order_no, "00009")
-        self.assertEqual(request.gift_ids, ("N01B0L1LE91VZS8S01", "N01B0J1JDK1V007H08"))
+        self.assertEqual(request.gift_ids, ("N00A090GEU0DXM6O02", "N00A0L1LE90DXM5001"))
 
     def test_normal_registration_does_not_compare_original_recipient_information(self):
         request = request_from_row({**sample(), "change_address": False}, load_gifts())

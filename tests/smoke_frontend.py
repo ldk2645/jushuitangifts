@@ -152,9 +152,9 @@ def main():
             control("gift").click()
             option_ids = [element.get_attribute("value") for element in driver.find_elements(By.CSS_SELECTOR, "#gift-options input")]
             assert option_ids == [gift["id"] for gift in catalog]
-            assert abs(option_ids.index("N00A0L1LE90DXM5001") - option_ids.index("N01B0J1JDK1V007H08")) >= 10
-            driver.find_element(By.CSS_SELECTOR, '#gift-options input[value="N01B0L1LE91VZS8S01"]').click()
-            driver.find_element(By.CSS_SELECTOR, '#gift-options input[value="N01B0J1JDK1V007H08"]').click()
+            assert abs(option_ids.index("N00A0L1LE90DXM5001") - option_ids.index("N00A0L1LE90DXM5001")) >= 10
+            driver.find_element(By.CSS_SELECTOR, '#gift-options input[value="N00A090GEU0DXM6O02"]').click()
+            driver.find_element(By.CSS_SELECTOR, '#gift-options input[value="N00A0L1LE90DXM5001"]').click()
             assert "已选 2 项" in driver.find_element(By.ID, "gift-count").text
             driver.save_screenshot(str(output / "gift-picker.png"))
             driver.find_element(By.ID, "gift-done").click()
@@ -191,7 +191,7 @@ def main():
             wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, "#grid-body tr[data-id]")) == 18)
             assert control("order_no").get_attribute("value") == "00012345678901234567890"
             assert control("recipient_name").get_attribute("value") == "测试收件人"
-            assert "米家保温杯口袋版" in control("gift").text and "小米小背包" in control("gift").text
+            assert "赠品保温杯" in control("gift").text and "赠品小背包" in control("gift").text
 
             control("change_address").click()
             assert len(labels()) == 4
@@ -209,8 +209,8 @@ def main():
             assert store.read()["rows"][0]["order_no"] == "00009"
             assert store.read()["rows"][1]["order_no"] == "00010"
             assert store.read()["rows"][1]["change_address"] is False
-            assert store.read()["rows"][0]["gift_ids"] == ["N01B0L1LE91VZS8S01", "N01B0J1JDK1V007H08"]
-            assert store.read()["rows"][1]["gift_ids"] == ["N01B0J1JDK1V007H08"]
+            assert store.read()["rows"][0]["gift_ids"] == ["N00A090GEU0DXM6O02", "N00A0L1LE90DXM5001"]
+            assert store.read()["rows"][1]["gift_ids"] == ["N00A0L1LE90DXM5001"]
             assert "已完成" not in driver.find_element(By.CSS_SELECTOR, "#grid-body").text
             # 粘贴后选中整个区域；先重新选择单行，再验证单行删除。
             control("order_no").click()

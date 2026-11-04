@@ -79,6 +79,7 @@ class PlatformOperationsTests(unittest.TestCase):
         self.sleep = Mock()
         self.operations = SeleniumOperations(browsers=self.browsers, query_factory=lambda _: self.query,
                                              form_factory=lambda _: self.form, sleep=self.sleep)
+        self.operations.configured = True  # 显式启用合成适配器，独立于真实页面核对状态。
 
     def test_prepare_start_reserves_profiles_without_opening_or_querying_browser(self):
         self.operations.prepare_start()

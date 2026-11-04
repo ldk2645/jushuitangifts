@@ -5,6 +5,7 @@ import json
 
 from gift_registry import __version__
 from gift_registry.config import DATA_DIR
+from gift_registry.edition import DEFAULT_PORT
 
 
 def main():
@@ -12,7 +13,7 @@ def main():
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--status", action="store_true", help="仅查看状态，不输出会话凭据")
     parser.add_argument("--login", action="store_true", help="打开平台登录助手")
-    parser.add_argument("--port", type=int, default=8765, help="本地前端端口，默认 8765")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="荣耀本地前端端口，默认 8767")
     parser.add_argument("--no-open", action="store_true", help="启动前端但不自动打开浏览器")
     parser.add_argument('--launch', action='store_true', help='显示启动状态，等待旧工作台正常退出后自动打开')
     parser.add_argument('--enable-lan', action='store_true', help='保存并启用局域网共享配置')

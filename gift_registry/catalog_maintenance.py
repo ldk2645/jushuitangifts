@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .catalog_transaction import catalog_access, state_directory, _no_links, sha256
 from .gift_catalog import validate_gift
+from .edition import original_installation_path
 
 FILES = ('gifts.json', 'gift_groups.local.json')
 PROTECTED = (Path(r'D:\UserData\Desktop\NL'), Path(r'E:\gifts'))
@@ -71,9 +72,8 @@ def validate_pair(catalog, groups):
 class BoundCatalog:
     def __init__(self, root, *, reader=None):
         self.root = _no_links(Path(root)).resolve()
-        for protected in PROTECTED:
-            if self.root == protected.resolve() or self.root.is_relative_to(protected.resolve()):
-                raise ValueError('开发阶段禁止以生产目录或 U 盘为维护目标')
+        if original_installation_path(self.root):
+            raise ValueError('禁止以原项目目录或 U 盘为维护目标；仅允许独立荣耀目录')
         self.config = _no_links(self.root / 'config')
         self.work = _no_links(state_directory(self.config))
         self.reader = reader or UnconfiguredProductReader()

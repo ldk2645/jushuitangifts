@@ -23,7 +23,7 @@ class OwnedFormCleanupTests(unittest.TestCase):
         page._track_form(root, REQUEST)
         page._visible = Mock(side_effect=lambda _, selector: (
             [state['root']] if state['open'] and selector == '.w-edit-task-dialog'
-            else [Mock()] if state['open'] and selector == '#col_1915 .children-box-body > .el-table' else []))
+            else [Mock()] if state['open'] and selector == '#col_27748 .children-box-body > .el-table' else []))
         page._value = Mock(side_effect=lambda _: state['order'])
         page._selected_gifts = Mock(side_effect=lambda: state['selected'])
         page._one = Mock(return_value=close)

@@ -81,7 +81,7 @@ const roots=[...document.querySelectorAll('.task-details')].filter(e=>e.getClien
 if(roots.length!==1) return null;
 const root=roots[0], fields={};
 const wanted=['工单编号','创建时间','同步状态','售后类型','补发类型','订单号',
-              '问题类型','是否自动确认售后单','售后单内部单号'];
+              '问题类型','是否自动确认售后单','售后单内部单号','单选','品牌'];
 for(const label of root.querySelectorAll('.task-details-component-title')) {
   if(!wanted.includes(label.title)) continue;
   const box=label.closest('.task-details-component-box');
@@ -91,7 +91,7 @@ for(const label of root.querySelectorAll('.task-details-component-title')) {
   clone.querySelectorAll('.el-popover,.show-value-right-btn-box').forEach(e=>e.remove());
   fields[label.title]=clone.textContent.trim();
 }
-const tables=[...root.querySelectorAll('#col_1915 .el-table')];
+const tables=[...root.querySelectorAll('#col_27748 .el-table')];
 if(tables.length!==1) return null;
 const table=tables[0];
 const headers=[...table.querySelectorAll(':scope > .el-table__header-wrapper th')]
@@ -134,7 +134,7 @@ def receipt_from_detail(snapshot, request, before, task_id, *, not_before=None):
     if not snapshot:
         return None
     fields = snapshot["fields"]
-    expected = {"工单编号": task_id, "售后类型": "补发", "补发类型": "非原单原地址",
+    expected = {"工单编号": task_id, "单选": "能良移动", "品牌": "荣耀", "售后类型": "补发", "补发类型": "非原单原地址",
                 "订单号": request.order_no, "问题类型": "赠品补发", "是否自动确认售后单": "是"}
     if any(fields.get(key) != value for key, value in expected.items()):
         raise PlatformOperationError("班牛已保存任务与本次登记不一致；禁止再次提交")
@@ -147,7 +147,7 @@ def receipt_from_detail(snapshot, request, before, task_id, *, not_before=None):
     if not_before is not None and created < not_before.replace(microsecond=0):
         raise PlatformOperationError("班牛回执属于本次提交前的旧任务；禁止再次提交")
     state = fields.get("同步状态", "")
-    if state == "失败":
+    if state in {"失败", "平台失败", "班牛失败"}:
         raise PlatformOperationError("班牛任务同步未成功，请人工核查；禁止再次提交")
     identifier = fields.get("售后单内部单号", "")
     # 异步同步尚未成功时继续有界只读核对；未知状态也绝不当作成功。
@@ -170,33 +170,33 @@ class BanniuReceiptReader:
         self.page._one('.advancedFilter')
         # 用户可删除默认订单号条件、添加日期/店铺限制，不能沿用这类子集作基线。
         for _ in range(100):
-            others = self.page._visible(self.driver, '.advancedFilter-top-item:not(#list_1891)')
+            others = self.page._visible(self.driver, '.advancedFilter-top-item:not(#list_27724)')
             if not others:
                 break
             count = len(others)
             self.page._one('.bnRule-del', root=others[0]).click()
             self.page._wait(lambda _: len(self.page._visible(
-                self.driver, '.advancedFilter-top-item:not(#list_1891)')) < count,
+                self.driver, '.advancedFilter-top-item:not(#list_27724)')) < count,
                 "班牛其他筛选条件未清除，无法取得完整订单任务基线")
         else:
             raise PlatformOperationError("班牛筛选条件过多，无法确认完整任务基线")
-        if not self.page._visible(self.driver, '#list_1891 textarea'):
+        if not self.page._visible(self.driver, '#list_27724 textarea'):
             self.page._one('.height-search-bottom-right-add', text='添加筛选条件').click()
             search = self.page._one('.height-search-bottom-right-input input')
             search.clear()
             search.send_keys('订单号')
             self.page._one('.height-search-bottom-right-drop[title="订单号"]').click()
-        field = self.page._one('#list_1891 textarea')
+        field = self.page._one('#list_27724 textarea')
         # 添加条件是多选菜单，选中后仍覆盖底部按钮；点击无副作用的字段标题收起。
         if self.page._visible(self.driver, '.height-search-bottom-right-input input'):
-            self.page._one('#list_1891 .advancedFilter-title[title="订单号"]').click()
+            self.page._one('#list_27724 .advancedFilter-title[title="订单号"]').click()
         self.page._wait(lambda _: not self.page._visible(self.driver, '.height-search-bottom-right-input input'),
                         "班牛添加筛选条件菜单未收起")
-        operator = self.page._one('#list_1891 .bnRule-down')
+        operator = self.page._one('#list_27724 .bnRule-down')
         if operator.text.strip() != '等于':
             operator.click()
             self.page._one('.bnDropdown-drop-title[title="等于"]').click()
-        self.page._wait(lambda _: self.page._one('#list_1891 .bnRule-down').text.strip() == '等于',
+        self.page._wait(lambda _: self.page._one('#list_27724 .bnRule-down').text.strip() == '等于',
                         "班牛订单号筛选未设置为精确匹配")
         return field
 
@@ -229,7 +229,7 @@ class BanniuReceiptReader:
             _open_registration_list(self.driver)
         if self.authenticate is not None:
             self.authenticate(target_url=BANNIU_REGISTRATION_URL)
-        self.page._one('div.title.el-dropdown-selfdefine', text='聚水潭赠品补发-融合')
+        self.page._one('div.title.el-dropdown-selfdefine', text='聚水谭赠品补发—荣耀')
         # 页面标题先于列表及保存的筛选展开状态出现；等列表加载完成后再决定是否展开。
         self.page._wait(lambda _: self.driver.execute_script(_REGISTRATION_LIST_READY) is True
                         and not self.page._visible(self.driver, '.el-loading-mask'),

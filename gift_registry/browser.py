@@ -116,7 +116,11 @@ class SiteBrowser:
         self.driver = create_driver(self.site, headless=True) if self.headless else create_driver(self.site)
         if self.snapshot:
             self.restore(self.snapshot)
-        self.navigate(ENTRY_URLS.get(self.site.key, self.site.url))
+        # 荣耀版仍用原班牛登录入口；有会话时直接恢复登记工作表。
+        # 认证器在成功登录后才导航到 ENTRY_URLS 中的荣耀登记地址。
+        initial_url = (self.site.url if self.site.key == 'banniu' and not self.snapshot
+                       else ENTRY_URLS.get(self.site.key, self.site.url))
+        self.navigate(initial_url)
         try:
             self.ensure_authenticated()
         except AuthenticationRequired as exc:

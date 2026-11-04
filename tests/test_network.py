@@ -283,7 +283,7 @@ class LanHTTPTests(unittest.TestCase):
     def test_health_discloses_no_token_or_business_data(self):
         with self.request('/api/health', auth=False) as response:
             data = json.load(response)
-            self.assertEqual(set(data), {'app', 'lan_enabled', 'domain', 'lan_ip', 'subnet', 'stopping'})
+            self.assertEqual(set(data), {'app', 'edition', 'lan_enabled', 'domain', 'lan_ip', 'subnet', 'stopping'})
             self.assertEqual(data['subnet'], SETTINGS.subnet)
 
     def test_stale_page_token_rejects_writes_before_creating_tasks(self):

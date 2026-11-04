@@ -10,12 +10,13 @@ from selenium.common.exceptions import (NoSuchElementException, StaleElementRefe
 from selenium.webdriver.common.by import By
 
 from .credentials import CredentialStore
+from .edition import BANNIU_URL, BANNIU_TITLE, BANNIU_BOARD_FRAGMENT, BANNIU_BOARD_TITLE
 from .workflow import PlatformOperationError
 
 
 ENTRY_URLS = {
     "jushuitan": "https://dopre.jushuitan.com/app/order/order/list.aspx",
-    "banniu": "https://work.bytenew.com/app.html#/applet/appNew/projectNew/54119/1883",
+    "banniu": BANNIU_URL,
 }
 _HOSTS = {"jushuitan": "dopre.jushuitan.com", "banniu": "work.bytenew.com"}
 _LOGIN_PATHS = {"jushuitan": "/login.aspx", "banniu": "/app.html"}
@@ -93,7 +94,7 @@ class SessionAuthenticator:
 
     def _ready(self, driver, parts):
         entry = urlsplit(ENTRY_URLS[self.site.key])
-        if parts.path != entry.path:
+        if parts.path != entry.path or (self.site.key == 'banniu' and parts.fragment != entry.fragment):
             return False
         # 过期登录弹层可能保留后台业务标题；可见登录/验证控件优先于旧标记。
         if self._login_fields_visible(driver) or self._challenge(driver):
@@ -102,7 +103,7 @@ class SessionAuthenticator:
             return (self._one(driver, "#_jt_body") is not None
                     and self._one(driver, "iframe#s_filter_frame") is not None)
         title = self._one(driver, "div.title.el-dropdown-selfdefine")
-        return title is not None and title.text.strip() == "聚水潭赠品补发-融合"
+        return bool(BANNIU_TITLE) and title is not None and title.text.strip() == BANNIU_TITLE
 
     def _logged_in_shell(self, driver, parts):
         """仅允许已观察到的登录后外壳触发一次只读入口导航。"""
@@ -112,6 +113,11 @@ class SessionAuthenticator:
             return parts.path == "/epaas"
         if parts.path != "/app.html":
             return False
+        # 新账号登录后实际落在荣耀看板；确认该看板后只导航一次到登记工作表。
+        if parts.fragment == BANNIU_BOARD_FRAGMENT:
+            board = self._one(driver, 'button.board-top-item-title.el-dropdown-selfdefine')
+            if board is not None and board.text.strip() == BANNIU_BOARD_TITLE:
+                return True
         title = self._one(driver, "div.title.el-dropdown-selfdefine")
         create = self._one(driver, "button.edit-task-button-btn")
         return (title is not None and bool(title.text.strip()) and create is not None

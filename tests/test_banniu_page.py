@@ -36,7 +36,7 @@ class BanniuPageTests(unittest.TestCase):
 
     def test_only_order_loading_uses_longer_wait_and_enter_is_not_repeated(self):
         page = BanniuPage(Mock())
-        for name in ('_click_once', '_one', '_dialog', '_track_form', '_choose_radio', '_set_text', '_send_keys'):
+        for name in ('_click_once', '_one', '_dialog', '_track_form', '_choose_radio', '_set_text', '_send_keys', '_validate_honor_context'):
             setattr(page, name, Mock())
         page._value = Mock(return_value='')
         page._wait = Mock(side_effect=PlatformOperationError('loading timed out'))

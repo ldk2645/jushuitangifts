@@ -1,4 +1,4 @@
-param([ValidateRange(1, 65535)][int]$Port = 8765)
+param([ValidateRange(1, 65535)][int]$Port = 8767)
 
 $ErrorActionPreference = 'Stop'
 $Base = "http://127.0.0.1:$Port"
@@ -53,6 +53,10 @@ if (-not (Test-LocalPort -Number $Port)) {
 
 try {
     $Config = Invoke-RestMethod -Uri "$Base/api/config" -TimeoutSec 5
+    if ($Config.edition -ne 'honor') {
+        Write-Warning 'Target service is not the Honor edition; shutdown refused.'
+        exit 1
+    }
     Invoke-RestMethod -Method Post -Uri "$Base/api/shutdown" -Headers @{ 'X-CSRF-Token' = $Config.token } -TimeoutSec 5 | Out-Null
     Write-Host "Graceful shutdown requested on port $Port."
 } catch {

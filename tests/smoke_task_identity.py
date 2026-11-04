@@ -105,7 +105,7 @@ def main():
                 <div class="task-details" style="display:none">
                 <div class="task-details-component-box"><span class="task-details-component-title" title="工单编号"></span><span class="show-value-content">001</span></div>
                 <div class="task-details-component-box"><span class="task-details-component-title" title="订单号"></span><span class="show-value-content">SYNTHETIC-ORDER</span></div>
-                <div id="col_1915"><div class="el-table"><div class="el-table__header-wrapper"><table><tr>{headers}</tr></table></div>
+                <div id="col_27748"><div class="el-table"><div class="el-table__header-wrapper"><table><tr>{headers}</tr></table></div>
                 <div class="el-table__body-wrapper"><table><tbody><tr>{cells}</tr></tbody></table></div></div></div></div>'''
                 js('document.body.innerHTML=arguments[0];document.querySelector("button").addEventListener("click",()=>document.querySelector(".task-details").style.display="block");', html)
             reader = BanniuReceiptReader(BanniuPage(driver))

@@ -19,8 +19,8 @@ BLOCKED_DETAIL = "登录助手正在占用浏览器配置，请保存并关闭�
 
 
 def sample(identifier="row-1", order="00009", *, change_address=False):
-    return {"id": identifier, "order_no": order, "gift": "米家保温杯口袋版、小米小背包",
-            "gift_ids": ["N01B0L1LE91VZS8S01", "N01B0J1JDK1V007H08"],
+    return {"id": identifier, "order_no": order, "gift": "赠品保温杯、赠品小背包",
+            "gift_ids": ["N00A090GEU0DXM6O02", "N00A0L1LE90DXM5001"],
             "change_address": change_address, "recipient_name": "测试姓名",
             "phone": "0013800000000", "address": "测试地址"}
 

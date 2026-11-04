@@ -161,6 +161,9 @@ class GroupMembershipTests(unittest.TestCase):
             catalog = folder / 'gifts.json'
             catalog.write_text(json.dumps(CATALOG), encoding='utf-8')
             original = catalog.read_bytes()
+            (folder / 'groups.json').write_text(json.dumps({'version': 1, 'revision': 0,
+                'groups': [{'id': 'synthetic-a', 'name': '合成甲组'}, {'id': 'synthetic-b', 'name': '合成乙组'}],
+                'memberships': {}}), encoding='utf-8')
             groups = GiftGroupStore(folder / 'groups.json', GiftCatalogStore(catalog))
             ids = [group['id'] for group in groups.read()['groups']]
             for revision, group in enumerate(ids):
@@ -210,6 +213,7 @@ class RetryGiftBaselineTests(unittest.TestCase):
 
     def test_retry_authorization_does_not_transfer_to_other_gift_set(self):
         operations = SeleniumOperations(browsers=Mock())
+        operations.configured = True  # 仅此显式 mock 测试。
         page = Mock()
         operations._banniu = Mock(return_value=page)
         a = RegistrationRequest('SYNTHETIC-ORDER', ('001-A',), ('同名',))

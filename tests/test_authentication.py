@@ -86,7 +86,7 @@ class FakeDriver:
         self.mode = mode
         self.challenges = []
         self.error = False
-        self.title_text = "聚水潭赠品补发-融合"
+        self.title_text = "聚水谭赠品补发—荣耀"
         self.missing_iframe = False
         self.hidden_login_overlay = False
         self.duplicate_user = False
@@ -111,7 +111,7 @@ class FakeDriver:
     def ready(self):
         self.mode = "ready"
         self.current_url = ENTRY_URLS[self.key]
-        self.title_text = "聚水潭赠品补发-融合"
+        self.title_text = "聚水谭赠品补发—荣耀"
         self.notice_visible = False
 
     def home(self):
@@ -176,6 +176,7 @@ class FakeDriver:
             self.ready()
 
 
+@patch('gift_registry.authentication.BANNIU_TITLE', '聚水谭赠品补发—荣耀')
 class AuthenticationTests(unittest.TestCase):
     def test_closed_session_is_not_reported_as_password_login_failure(self):
         auth, driver, store, _ = self.make()

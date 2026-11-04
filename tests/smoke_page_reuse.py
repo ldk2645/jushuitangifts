@@ -41,9 +41,9 @@ window.renderOrder=function(order) {
 """
 FILTER_HTML = '<input id="so_id" onkeydown="if(event.key===\'Enter\') parent.renderOrder(this.value)">'
 BN_HTML = """
-<div class="title el-dropdown-selfdefine">聚水潭赠品补发-融合</div>
+<div class="title el-dropdown-selfdefine">聚水谭赠品补发—荣耀</div>
 <button class="edit-task-button-btn" onclick="window.newTasks++">新建</button>
-<div class="advancedFilter"><div id="list_1891" class="advancedFilter-top-item">
+<div class="advancedFilter"><div id="list_27724" class="advancedFilter-top-item">
   <span class="advancedFilter-title" title="订单号">订单号</span>
   <span class="bnRule-down">等于</span><textarea></textarea>
 </div></div>
@@ -58,7 +58,7 @@ window.filterCount=0;window.newTasks=0;window.freeze=sessionStorage.getItem('fre
 function filterOrder() {
   window.filterCount++;
   if(window.freeze) return;
-  const order=document.querySelector('#list_1891 textarea').value;
+  const order=document.querySelector('#list_27724 textarea').value;
   setTimeout(()=>{
     document.querySelector('.vxe-table--body tbody').innerHTML=`<tr rowid="10${order}">
       <td colid="order"><span class="worksheetColumn worksheetColumn-hover" onclick="openSyntheticDetail()">${order}</span></td>

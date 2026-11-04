@@ -27,14 +27,14 @@ textarea,input{display:block;margin:10px 0}th{padding:6px}</style>
 <script>
 sessionStorage.setItem('loads',String(Number(sessionStorage.getItem('loads')||0)+1));
 window.filterOrder=function(){
- const order=document.querySelector('#list_1891 textarea').value;
+ const order=document.querySelector('#list_27724 textarea').value;
  const filters=JSON.parse(sessionStorage.getItem('filters')||'[]');filters.push(order);
  sessionStorage.setItem('filters',JSON.stringify(filters));
  setTimeout(()=>{document.querySelector('.vxe-table--body tbody').innerHTML='<!--fresh-'+filters.length+'-->';
  document.querySelector('.el-pagination__total').textContent='共 0 条';},50);
 };
 window.syntheticSubmit=function(button){
- const form=button.closest('.w-edit-task-dialog'),order=form.querySelector('#col_1891 textarea').value;
+ const form=button.closest('.w-edit-task-dialog'),order=form.querySelector('#col_27724 textarea').value;
  const counts=JSON.parse(sessionStorage.getItem('submits')||'{}');counts[order]=(counts[order]||0)+1;
  sessionStorage.setItem('submits',JSON.stringify(counts));
  if(!['00001','00003','00005'].includes(order))form.remove();
@@ -71,9 +71,9 @@ def main():
                     def fill(request):
                         driver.execute_script('document.body.insertAdjacentHTML("beforeend",arguments[0])', FORM_BODY)
                         page._track_form(page._dialog(), request)
-                        page._set_text('#col_1891 textarea', request.order_no)
+                        page._set_text('#col_27724 textarea', request.order_no)
                         driver.execute_script('''
-                          document.querySelector('#col_1915 .el-table__body-wrapper tbody').innerHTML='<tr><td>补发</td><td>TEST-SKU</td><td>合成礼品</td><td>0</td><td>1</td></tr>';
+                          document.querySelector('#col_27748 .el-table__body-wrapper tbody').innerHTML='<tr><td>补发</td><td>TEST-SKU</td><td>合成礼品</td><td>0</td><td>1</td></tr>';
                           const button=document.querySelector('#synthetic-submit');
                           button.className='el-button--primary';button.setAttribute('onclick','syntheticSubmit(this)');
                         ''')

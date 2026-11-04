@@ -60,7 +60,7 @@ class UpdateLanBatTests(unittest.TestCase):
         result = self.run_bat(firewall_exit=1)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn('firewall update failed or was cancelled', result.stdout)
-        self.assertEqual((self.folder / 'firewall-called.txt').read_text(encoding='ascii').strip(), '8765')
+        self.assertEqual((self.folder / 'firewall-called.txt').read_text(encoding='ascii').strip(), '8767')
 
     def test_read_only_failure_does_not_fall_through(self):
         result = self.run_bat('--check', setup_exit=1)

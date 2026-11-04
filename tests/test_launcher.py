@@ -8,7 +8,7 @@ from gift_registry import frontend_server, launcher
 from gift_registry.network import NetworkSettings
 from gift_registry.registration import RegistrationQueue
 
-HEALTH = {'app': 'gift_registry', 'lan_enabled': False, 'lan_ip': '', 'domain': ''}
+HEALTH = {'app': 'gift_registry', 'edition': 'honor', 'lan_enabled': False, 'lan_ip': '', 'domain': ''}
 
 
 class LauncherTests(unittest.TestCase):
@@ -84,7 +84,7 @@ class LauncherTests(unittest.TestCase):
         response=Mock()
         response.__enter__=Mock(return_value=response)
         response.__exit__=Mock(return_value=None)
-        response.read.return_value=b'{"app":"gift_registry"}'
+        response.read.return_value=b'{"app":"gift_registry","edition":"honor"}'
         opener=Mock()
         opener.open.return_value=response
         with patch.object(launcher,'build_opener',return_value=opener) as factory:
@@ -120,7 +120,7 @@ class LauncherTests(unittest.TestCase):
             response = Mock()
             response.__enter__ = Mock(return_value=response)
             response.__exit__ = Mock(return_value=None)
-            response.read.return_value = ('{"app":"gift_registry","lan_enabled":true,'
+            response.read.return_value = ('{"app":"gift_registry","edition":"honor","lan_enabled":true,'
                                           '"domain":"","lan_ip":"192.168.2.10","subnet":"' + subnet + '"}').encode()
             opener = Mock()
             opener.open.return_value = response

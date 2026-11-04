@@ -10,7 +10,7 @@ echo [1/2] Detecting physical LAN and updating this project configuration...
 "%~dp0.venv\Scripts\python.exe" -m gift_registry.lan_setup
 if errorlevel 1 goto setup_failed
 echo [2/2] Updating this app firewall rule. Windows may request administrator permission...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0allow-lan.ps1" -Port 8765
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0allow-lan.ps1" -Port 8767
 if errorlevel 1 goto firewall_failed
 echo.
 echo LAN configuration and firewall updated. Restart the workbench normally if the IP changed.

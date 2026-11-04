@@ -25,7 +25,7 @@ def task(identifier=TASK, **updates):
 
 
 def detail():
-    return {"fields": {"工单编号": TASK, "创建时间": "2026-10-23 10:00:00", "同步状态": "成功",
+    return {"fields": {"工单编号": TASK, "单选": "能良移动", "品牌": "荣耀", "创建时间": "2026-10-23 10:00:00", "同步状态": "成功",
                        "售后类型": "补发", "补发类型": "非原单原地址", "订单号": ORDER,
                        "问题类型": "赠品补发", "是否自动确认售后单": "是", "售后单内部单号": "000049"},
             "headers": list(GIFT_COLUMNS), "rows": [["补发", SKU, NAME, "0", "1"]]}
@@ -69,7 +69,7 @@ class ReceiptDetailTests(unittest.TestCase):
         self.assertEqual(receipt.reference, "")
 
     def test_each_business_field_must_match_the_same_task(self):
-        for key in ("工单编号", "售后类型", "补发类型", "订单号", "问题类型", "是否自动确认售后单"):
+        for key in ("工单编号", "单选", "品牌", "售后类型", "补发类型", "订单号", "问题类型", "是否自动确认售后单"):
             snapshot = detail()
             snapshot["fields"][key] = "错误值"
             with self.subTest(key=key), self.assertRaisesRegex(PlatformOperationError, "与本次登记不一致"):
@@ -250,7 +250,7 @@ class ReceiptQueryTests(unittest.TestCase):
         field, button = Mock(), Mock()
         field.get_attribute.return_value = ORDER
         page._visible.side_effect = lambda _, selector: [] if selector in ('.w-edit-task-dialog', '.el-loading-mask') else [field]
-        page._one.side_effect = lambda selector, **_: field if selector == '#list_1891 textarea' else button
+        page._one.side_effect = lambda selector, **_: field if selector == '#list_27724 textarea' else button
         fresh = iter([False, True, True, True])
         snapshots = iter([{"pager": "共 1 条", "rows": [task(order_no="old-order")]},
                           {"pager": "共 1 条", "rows": [task()]},
@@ -299,7 +299,7 @@ class ReceiptQueryTests(unittest.TestCase):
         field, button = Mock(), Mock()
         field.get_attribute.return_value = ORDER
         page._visible.side_effect = lambda _, selector: [] if selector in ('.w-edit-task-dialog', '.el-loading-mask') else [field]
-        page._one.side_effect = lambda selector, **_: field if selector == '#list_1891 textarea' else button
+        page._one.side_effect = lambda selector, **_: field if selector == '#list_27724 textarea' else button
         page._wait.side_effect = [True, PlatformOperationError("查询超时")]
         with self.assertRaises(PlatformOperationError):
             self.query_reader(page, field).query_tasks(ORDER)
@@ -333,7 +333,7 @@ class ReceiptQueryTests(unittest.TestCase):
             return []
 
         def one(selector, **_):
-            if selector == '#list_1891 textarea':
+            if selector == '#list_27724 textarea':
                 return field
             if selector == 'button.worksheet-main-content-bar-item-set':
                 self.assertEqual(initial_reads, 3)
@@ -365,7 +365,7 @@ class ReceiptQueryTests(unittest.TestCase):
         page._visible.return_value = []
 
         def one(selector, **_):
-            if selector == '#list_1891 textarea':
+            if selector == '#list_27724 textarea':
                 toggle.click.assert_not_called()
                 return field  # _one waits until the already expanding field is ready.
             return toggle if selector == 'button.worksheet-main-content-bar-item-set' else button
@@ -413,9 +413,9 @@ class OrderFilterTests(unittest.TestCase):
         controls["equals"].click.side_effect = lambda: setattr(controls["operator"], "text", "等于")
 
         def visible(_, selector):
-            if selector == '.advancedFilter-top-item:not(#list_1891)':
+            if selector == '.advancedFilter-top-item:not(#list_27724)':
                 return list(state["others"])
-            if selector == '#list_1891 textarea':
+            if selector == '#list_27724 textarea':
                 return [controls["field"]] if state["order_present"] else []
             if selector == '.height-search-bottom-right-input input':
                 return [controls["search"]] if state["menu"] else []
@@ -429,11 +429,11 @@ class OrderFilterTests(unittest.TestCase):
             mapping = {'.height-search-bottom-right-add': "add",
                        '.height-search-bottom-right-input input': "search",
                        '.height-search-bottom-right-drop[title="订单号"]': "option",
-                       '#list_1891 .advancedFilter-title[title="订单号"]': "title",
-                       '#list_1891 textarea': "field", '#list_1891 .bnRule-down': "operator",
+                       '#list_27724 .advancedFilter-title[title="订单号"]': "title",
+                       '#list_27724 textarea': "field", '#list_27724 .bnRule-down': "operator",
                        '.bnDropdown-drop-title[title="等于"]': "equals"}
             self.assertIn(selector, mapping)  # No save button or task mutation belongs in this flow.
-            if selector == '#list_1891 textarea':
+            if selector == '#list_27724 textarea':
                 self.assertTrue(state["order_present"])
             return controls[mapping[selector]]
 

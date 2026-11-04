@@ -17,8 +17,8 @@ body{font:16px sans-serif}.w-edit-task-dialog{padding:20px;width:600px;border:1p
 textarea,input{display:block;margin:10px 0}th{padding:5px}
 </style><body><div class="w-edit-task-dialog">
 <div class="w-dialog-title"><div class="w-dialog-close" onclick="window.closeCount++;this.closest('.w-edit-task-dialog').style.display='none'">×</div></div>
-<div id="col_1891"><textarea></textarea></div><input id="manual-note" aria-label="合成人工备注">
-<div id="col_1915"><div class="children-box-body"><div class="el-table">
+<div id="col_27724"><textarea></textarea></div><input id="manual-note" aria-label="合成人工备注">
+<div id="col_27748"><div class="children-box-body"><div class="el-table">
 <div class="el-table__header-wrapper"><table><tr><th>退换补类型</th><th>商家编码</th><th>货品名称</th><th>退换补商品金额</th><th>数量</th></tr></table></div>
 <div class="el-table__body-wrapper"><table><tbody></tbody></table></div>
 </div></div></div><button id="synthetic-submit" type="button" onclick="window.submitCount++">提交</button>
@@ -41,7 +41,7 @@ def main():
             page = BanniuPage(driver, timeout=1)
             root = page._dialog()
             page._track_form(root, request)
-            page._set_text('#col_1891 textarea', request.order_no)
+            page._set_text('#col_27724 textarea', request.order_no)
             return page, root
 
         try:
@@ -61,12 +61,12 @@ def main():
             assert driver.execute_script('return arguments[0].__giftRegistrationOwner.manualEdited', root)
             assert page._discard_unsubmitted_form(request) == 'preserved'
             try:
-                page._set_text('#col_1891 textarea', '00002')
+                page._set_text('#col_27724 textarea', '00002')
             except PlatformOperationError:
                 pass
             else:
                 raise AssertionError('Automation must stop after trusted manual input')
-            assert page._value('#col_1891 textarea') == '00001'
+            assert page._value('#col_27724 textarea') == '00001'
             assert driver.execute_script('return window.closeCount') == 0
 
             page, root = fresh()
@@ -79,7 +79,7 @@ def main():
             assert driver.execute_script('return window.closeCount') == 0
 
             page, root = fresh()
-            driver.execute_script("arguments[0].querySelector('#col_1891 textarea').value='another-order'", root)
+            driver.execute_script("arguments[0].querySelector('#col_27724 textarea').value='another-order'", root)
             assert page._discard_unsubmitted_form(request) == 'preserved'
             assert driver.execute_script('return window.closeCount') == 0
 

@@ -153,7 +153,7 @@ def authorized(header, password):
         return False
 
 
-def show_lan_info(settings, port=8765):
+def show_lan_info(settings, port=8767):
     """仅在主机桌面显示访问方式；不向网页、日志或命令输出密码。"""
     import tkinter as tk
     from tkinter import ttk

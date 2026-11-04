@@ -23,8 +23,8 @@ class GiftGroupStore:
         with catalog_access(self.path.parent), self.lock:
             if not self.path.exists():
                 return {"version": 1, "revision": 0, "groups": [
-                    {"id": "xiaomi-ecosystem", "name": "小米生态链"},
-                    {"id": "xiaomi-phone", "name": "小米手机"}], "memberships": {}}
+                    {"id": "honor", "name": "荣耀"}],
+                    "memberships": {}}
             data = json.loads(self.path.read_text(encoding="utf-8"))
             if (data.get("version") != 1 or type(data.get("revision")) is not int
                     or not isinstance(data.get("groups"), list) or not isinstance(data.get("memberships"), dict)):

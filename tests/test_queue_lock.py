@@ -14,8 +14,8 @@ from gift_registry.registration import RegistrationQueue, load_gifts
 
 
 def sample():
-    return {"id": "lock-test", "order_no": "00009", "gift": "米家保温杯口袋版、小米小背包",
-            "gift_ids": ["N01B0L1LE91VZS8S01", "N01B0J1JDK1V007H08"], "change_address": False,
+    return {"id": "lock-test", "order_no": "00009", "gift": "赠品保温杯、赠品小背包",
+            "gift_ids": ["N00A090GEU0DXM6O02", "N00A0L1LE90DXM5001"], "change_address": False,
             "recipient_name": "测试姓名", "phone": "0013800000000", "address": "测试地址"}
 
 

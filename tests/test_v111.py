@@ -32,7 +32,7 @@ class GroupTests(unittest.TestCase):
     def test_defaults_do_not_guess_memberships_or_change_catalog(self):
         content = self.catalog_path.read_bytes()
         result = self.groups.read()
-        self.assertEqual([g["name"] for g in result["groups"]], ["小米生态链", "小米手机"])
+        self.assertEqual([g["name"] for g in result["groups"]], ["荣耀"])
         self.assertEqual(result["memberships"], {})
         self.assertFalse(self.groups.path.exists())
         self.assertEqual(self.catalog_path.read_bytes(), content)
@@ -49,7 +49,7 @@ class GroupTests(unittest.TestCase):
         self.groups.update({"revision": 0, "action": "create", "name": "未来"})
         content = self.groups.path.read_bytes()
         for body in ({"revision": 0, "action": "create", "name": "旧请求"},
-                     {"revision": 1, "action": "create", "name": "小米手机"},
+                     {"revision": 1, "action": "create", "name": "荣耀"},
                      {"revision": 1, "action": "assign", "gift_ids": ["SKU-A"], "group_ids": ["unknown"]},
                      {"revision": 1, "action": "assign", "gift_ids": [123], "group_ids": []}):
             with self.assertRaises(ValueError):

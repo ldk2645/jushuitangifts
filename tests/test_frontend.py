@@ -16,7 +16,7 @@ class UnconfiguredOperations(FakeOperations):
 
 
 def sample():
-    return {"id": "row-1", "order_no": "00012345678901234567890", "gift": "米家保温杯口袋版", "gift_ids": ["N01B0L1LE91VZS8S01"],
+    return {"id": "row-1", "order_no": "00012345678901234567890", "gift": "赠品保温杯", "gift_ids": ["N00A090GEU0DXM6O02"],
             "change_address": False}
 
 
@@ -160,7 +160,7 @@ class RegistrationTests(unittest.TestCase):
         legacy = sample()
         del legacy["gift_ids"]
         loaded = validate_rows([legacy])[0]
-        self.assertEqual(loaded["gift"], "米家保温杯口袋版")
+        self.assertEqual(loaded["gift"], "赠品保温杯")
         self.assertEqual(loaded["gift_ids"], [])
 
 

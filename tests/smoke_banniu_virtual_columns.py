@@ -34,7 +34,7 @@ window.renderVirtual=function(){
  table.querySelector('.vxe-table--body').innerHTML=count?'<tr rowid="001"><td colid="order">'+(includeOrder?'<span class="worksheetColumn worksheetColumn-hover" onclick="openSyntheticDetail()">'+order+'</span>':'')+'</td><td colid="created">'+(includeTime?'<span class="worksheetColumn">2026-01-01 00:00:00</span>':'')+'</td></tr>':'';
 };
 scrollBox.addEventListener('scroll',()=>{window.virtualScrolls++;setTimeout(renderVirtual,30)});
-window.filterOrder=function(){window.filterCount++;if(window.freeze)return;setTimeout(()=>{window.currentOrder=document.querySelector('#list_1891 textarea').value;window.datasetVersion++;renderVirtual()},70)};
+window.filterOrder=function(){window.filterCount++;if(window.freeze)return;setTimeout(()=>{window.currentOrder=document.querySelector('#list_27724 textarea').value;window.datasetVersion++;renderVirtual()},70)};
 renderVirtual();
 </script>
 """
