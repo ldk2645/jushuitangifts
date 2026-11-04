@@ -192,10 +192,17 @@ function giftLabelScore(value, candidate) {
   if (candidate.includes(value) || value.includes(candidate)) return .8 + .15 * Math.min(candidate.length, value.length) / Math.max(candidate.length, value.length);
   return Math.min(value.length, candidate.length) >= 2 ? similarity(value, candidate) * .9 : 0;
 }
+function isGiftCodeInput(text) {
+  const input = text.trim();
+  // 编码按原字符串识别；疑似编码也不能借名称/别名的模糊匹配纠错。
+  return giftCatalog.some(gift => normalizeGift(gift.id) === normalizeGift(input)) ||
+    (/^[A-Za-z0-9_./:#@()+-]+$/u.test(input) && /[0-9_./:#@()+-]/u.test(input));
+}
 function giftScore(text, gift) {
+  if (giftCatalog.some(item => item.id === text.trim()) || isGiftCodeInput(text)) return gift.id === text.trim() ? 1 : 0;
   const value = normalizeGift(text);
   if (!value) return 0;
-  return Math.max(...[gift.id, gift.name, ...(gift.aliases || [])].map(label => giftLabelScore(value, normalizeGift(label))));
+  return Math.max(...[gift.name, ...(gift.aliases || [])].map(label => giftLabelScore(value, normalizeGift(label))));
 }
 let giftMatcher = null;
 function matchingContext() {
@@ -205,7 +212,7 @@ function matchingContext() {
   let maxWords = 8;
   for (const gift of scopedGifts()) {
     codes.set(gift.id, gift.id);
-    const labels = [gift.id, gift.name, ...(gift.aliases || [])];
+    const labels = [gift.name, ...(gift.aliases || [])];
     entries.push({ gift, labels: [...new Set(labels.map(normalizeGift).filter(Boolean))] });
     for (const label of labels) {
       const key = normalizeGift(label);
@@ -218,6 +225,10 @@ function matchingContext() {
       }
     }
   }
+  for (const gift of giftCatalog) {
+    const escaped = gift.id.replace(/[.*+?^$()|[\]{}\\]/g, "\\$&");
+    protectedLabels.push({label: gift.id, pattern: new RegExp("^(?:" + escaped + ")", "u")});
+  }
   protectedLabels.sort((a, b) => b.label.length - a.label.length);
   giftMatcher = { scopeKey, catalog: giftCatalog, size: giftCatalog.length, exact, codes, entries, protectedLabels, maxWords, parts: new Map(), results: new Map() };
   return giftMatcher;
@@ -229,6 +240,7 @@ function resolveGiftPart(text, strict = false) {
   let result;
   if (giftCatalog.some(gift => gift.id === text.trim()) && !context.codes.has(text.trim())) result = { id: null, score: 0, exact: true };
   else if (context.codes.has(text.trim())) result = { id: context.codes.get(text.trim()), score: 1, exact: true };
+  else if (isGiftCodeInput(text)) result = {id: null, score: 0, exact: true};
   else if (exact) result = { id: exact.size === 1 ? [...exact][0] : null, score: exact.size === 1 ? 1 : 0, exact: true };
   else {
     const matches = context.entries.map(({ gift, labels }) => {
@@ -302,6 +314,10 @@ function matchSpaceGiftParts(text) {
 function matchGifts(text) {
   const context = matchingContext(), cached = context.results.get(text);
   if (cached) return { ids: [...cached.ids], unmatched: [...cached.unmatched] };
+  if (giftCatalog.some(gift => normalizeGift(gift.id) === normalizeGift(text.trim()))) {
+    const match = resolveGiftPart(text);
+    return {ids: match.id ? [match.id] : [], unmatched: match.id ? [] : [text.trim()]};
+  }
   const ids = [], unmatched = [];
   for (const part of splitGiftParts(text)) {
     for (const segment of matchSpaceGiftParts(part)) {
@@ -891,7 +907,8 @@ function rangeBounds() {
   return { top: Math.min(start, end), bottom: Math.max(start, end), left: Math.min(left, right), right: Math.max(left, right) };
 }
 function cellReference(row, column) { return `${String.fromCharCode(65 + column)}${row + 2}`; }
-function paintSelection() {
+function paintSelection(keepHandle = false) {
+  if (!keepHandle) document.querySelectorAll(".fill-handle").forEach(node => node.remove());
   for (const node of selectedNodes) {
     node.classList.remove("selected-cell", "range-top", "range-bottom", "range-left", "range-right", "selected-gutter");
     node.removeAttribute("aria-selected");
@@ -903,6 +920,13 @@ function paintSelection() {
   fieldElement(active.id, active.field)?.classList.add("active-cell");
   const bounds = rangeBounds();
   if (bounds) {
+    if (bounds.left < columns().indexOf("status") && !document.querySelector(".fill-handle")) {
+      const handle = document.createElement("button");
+      handle.type = "button"; handle.className = "fill-handle"; handle.tabIndex = -1;
+      handle.title = "向下拖动填充；双击填充至相邻列末行；Ctrl+D 向下填充选区";
+      handle.setAttribute("aria-label", "向下填充选区");
+      fieldElement(gridRows()[bounds.bottom].id, columns()[bounds.right])?.append(handle);
+    }
     for (let row = bounds.top; row <= bounds.bottom; row++) {
       const tr = rowElement(gridRows()[row].id);
       tr.firstElementChild.classList.add("selected-gutter"); selectedNodes.add(tr.firstElementChild);
@@ -1037,6 +1061,7 @@ function scrollWhileSelecting() {
   dragFrame = requestAnimationFrame(scrollWhileSelecting);
 }
 $("#registry-grid").addEventListener("pointerdown", event => {
+  if (event.target.closest(".fill-handle")) return;
   if (!initialized || event.button !== 0 || event.target.closest(".column-resizer,select")) return;
   const header = event.target.closest("thead th");
   if (header) {
@@ -1085,6 +1110,9 @@ $("#registry-grid").addEventListener("dblclick", event => {
 $("#registry-grid").addEventListener("keydown", event => {
   if (!active || !columns().includes(active.field) || event.target.closest(".column-resizer,.address-details,select") || event.isComposing) return;
   const modifier = event.ctrlKey || event.metaKey;
+  if (modifier && event.key.toLowerCase() === "d" && !editing) {
+    event.preventDefault(); event.stopPropagation(); fillSelectedDown(); return;
+  }
   if (modifier && event.key.toLowerCase() === "a" && !editing) {
     event.preventDefault(); event.stopPropagation(); closeGiftPicker();
     selectRange({ id: gridRows()[0].id, field: "order_no" }, { id: gridRows().at(-1).id, field: "status" });
@@ -1109,11 +1137,11 @@ $("#registry-grid").addEventListener("keydown", event => {
     let row = gridRows().findIndex(item => item.id === origin.id), col = columns().indexOf(origin.field);
     if (event.key in arrows) { row += arrows[event.key][0]; col += arrows[event.key][1]; }
     if (event.key === "Enter") row += event.shiftKey ? -1 : 1;
-    if (event.key === "Tab") { col += event.shiftKey ? -1 : 1; if (col > 3) { row++; col = 0; } if (col < 0 && row > 0) { row--; col = 3; } }
+    if (event.key === "Tab") { col += event.shiftKey ? -1 : 1; if (col >= columns().length) { row++; col = 0; } if (col < 0 && row > 0) { row--; col = columns().length - 1; } }
     if (event.key === "Home") { col = 0; if (modifier) row = 0; }
-    if (event.key === "End") { col = 3; if (modifier) row = gridRows().length - 1; }
+    if (event.key === "End") { col = columns().length - 1; if (modifier) row = gridRows().length - 1; }
     if (!selectedStatus && row >= gridRows().length && ["Tab", "Enter"].includes(event.key) && rows.length < 10000) { remember(); rows.push(newRow()); changed(); render(); }
-    row = Math.max(0, Math.min(gridRows().length - 1, row)); col = Math.max(0, Math.min(3, col));
+    row = Math.max(0, Math.min(gridRows().length - 1, row)); col = Math.max(0, Math.min(columns().length - 1, col));
     const point = { id: gridRows()[row].id, field: columns()[col] };
     if (extending) { selectRange(selection?.anchor || active, point); focusCell(active.id, active.field, true); scrollCellIntoView(point.id, point.field); }
     else focusCell(point.id, point.field);
@@ -1224,6 +1252,117 @@ async function copySelectedRange() {
     finally { forceRangeCopy = false; }
   }
 }
+let fillDrag = null, fillFrame = null;
+function fillPlan(bounds) {
+  return {bounds: {...bounds}, version, scope: JSON.stringify(currentScope()),
+    visibleIds: gridRows().map(row => row.id), filtered: Boolean(selectedStatus),
+    source: structuredClone(gridRows().slice(bounds.top, bounds.bottom + 1))};
+}
+function applyFill(plan, end) {
+  const {bounds, source, visibleIds} = plan;
+  if (end <= bounds.bottom) return;
+  try {
+    if (plan.version !== version || plan.scope !== JSON.stringify(currentScope()) ||
+        JSON.stringify(visibleIds) !== JSON.stringify(gridRows().map(row => row.id))) throw new Error("填充期间表格或目录已变化，请重新选择");
+    if (end >= 10000 || (plan.filtered && end >= visibleIds.length)) throw new Error("填充超出当前可用行，请先清除筛选或减少范围");
+    const extra = Math.max(0, end + 1 - visibleIds.length);
+    if (rows.length + extra > 10000) throw new Error("填充后将超过 10000 行");
+    const updated = structuredClone(rows), targets = [];
+    for (let index = bounds.bottom + 1; index <= end; index++) {
+      let target = index < visibleIds.length ? updated.findIndex(row => row.id === visibleIds[index]) : updated.length;
+      if (target === updated.length) updated.push(newRow());
+      const original = source[(index - bounds.bottom - 1) % source.length], row = updated[target];
+      for (let col = bounds.left; col <= bounds.right; col++) {
+        const field = columns()[col];
+        if (field === "gift") {
+          const ids = original.gift_ids || [];
+          ensureGiftScope(ids);
+          assignGifts(row, ids, unresolvedGiftLabels(original));
+        } else if (field === "order_no") row.order_no = original.order_no;
+      }
+      targets.push(row);
+    }
+    if (JSON.stringify(updated) === JSON.stringify(rows)) return;
+    remember(); rows = updated; changed();
+    selection = {anchor: {id: visibleIds[bounds.top], field: columns()[bounds.left]},
+      focus: {id: targets.at(-1).id, field: columns()[bounds.right]}};
+    active = selection.anchor;
+    render(); focusCell(active.id, active.field, true);
+    toast("已向下填充 " + targets.length + " 行，单元格内容按原文复制，可按 Ctrl+Z 撤销");
+  } catch (error) { toast(error.message, true); }
+}
+function fillSelectedDown() {
+  const bounds = rangeBounds();
+  if (!bounds || bounds.bottom <= bounds.top) return toast("请先选中来源行和下方要填充的区域");
+  if (columns()[bounds.left] === "status") return toast("状态由登记结果更新，不能填充");
+  finishEditing(); closeGiftPicker();
+  applyFill(fillPlan({...bounds, bottom: bounds.top}), bounds.bottom);
+}
+function previewFill() {
+  if (!fillDrag) return;
+  document.querySelectorAll(".fill-preview").forEach(node => node.classList.remove("fill-preview"));
+  const point = pointAt(fillDrag.x, fillDrag.y);
+  let end = point ? gridRows().findIndex(row => row.id === point.id) : fillDrag.plan.bounds.bottom;
+  const last = rowElement(gridRows().at(-1)?.id)?.getBoundingClientRect();
+  const rect = $("#grid-scroll").getBoundingClientRect();
+  if (!fillDrag.plan.filtered && last && fillDrag.y > last.bottom && last.bottom < rect.bottom) {
+    end = gridRows().length - 1 + Math.max(1, Math.ceil((Math.min(fillDrag.y, rect.bottom - 2) - last.bottom) / Math.max(24, last.height)));
+  }
+  fillDrag.end = Math.min(9999, Math.max(fillDrag.plan.bounds.bottom, end));
+  const {bounds} = fillDrag.plan;
+  for (let row = bounds.bottom + 1; row <= Math.min(fillDrag.end, gridRows().length - 1); row++) {
+    for (let col = bounds.left; col <= bounds.right; col++) {
+      if (columns()[col] !== "status") fieldElement(gridRows()[row].id, columns()[col])?.classList.add("fill-preview");
+    }
+  }
+  $("#selection-summary").textContent = "向下填充 " + (fillDrag.end - bounds.bottom) + " 行 · 松开应用，Esc 取消";
+}
+function scrollWhileFilling() {
+  if (!fillDrag) { fillFrame = null; return; }
+  const grid = $("#grid-scroll"), rect = grid.getBoundingClientRect();
+  const lower = rect.bottom - 20, upper = rect.top + $("#grid-head").offsetHeight + 20;
+  if (fillDrag.y > lower) grid.scrollTop += Math.min(28, (fillDrag.y - lower) / 2);
+  if (fillDrag.y < upper) grid.scrollTop -= Math.min(28, (upper - fillDrag.y) / 2);
+  previewFill(); fillFrame = requestAnimationFrame(scrollWhileFilling);
+}
+function stopFilling(commit = false) {
+  if (!fillDrag) return;
+  const drag = fillDrag; fillDrag = null;
+  if (fillFrame !== null) cancelAnimationFrame(fillFrame);
+  fillFrame = null; document.body.classList.remove("range-filling");
+  document.querySelectorAll(".fill-preview").forEach(node => node.classList.remove("fill-preview"));
+  if (commit) applyFill(drag.plan, drag.end);
+  paintSelection(drag.end === drag.plan.bounds.bottom);
+  setTimeout(() => { suppressCellClick = false; }, 0);
+}
+$("#registry-grid").addEventListener("pointerdown", event => {
+  if (!event.target.closest(".fill-handle") || event.button !== 0) return;
+  event.preventDefault(); event.stopPropagation(); finishEditing(); closeGiftPicker();
+  const bounds = rangeBounds(); if (!bounds) return;
+  suppressCellClick = true;
+  fillDrag = {pointerId: event.pointerId, x: event.clientX, y: event.clientY, end: bounds.bottom, plan: fillPlan(bounds)};
+  document.body.classList.add("range-filling"); fillFrame = requestAnimationFrame(scrollWhileFilling);
+}, true);
+document.addEventListener("pointermove", event => {
+  if (fillDrag?.pointerId !== event.pointerId) return;
+  event.preventDefault(); fillDrag.x = event.clientX; fillDrag.y = event.clientY; previewFill();
+});
+document.addEventListener("pointerup", event => { if (fillDrag?.pointerId === event.pointerId) stopFilling(true); });
+document.addEventListener("pointercancel", event => { if (fillDrag?.pointerId === event.pointerId) stopFilling(); });
+window.addEventListener("blur", () => stopFilling());
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && fillDrag) { event.preventDefault(); event.stopImmediatePropagation(); stopFilling(); }
+}, true);
+$("#registry-grid").addEventListener("dblclick", event => {
+  if (!event.target.closest(".fill-handle")) return;
+  event.preventDefault(); event.stopPropagation();
+  const bounds = rangeBounds(); if (!bounds) return;
+  const adjacent = columns().filter((field, index) => field !== "status" && (index < bounds.left || index > bounds.right));
+  let end = bounds.bottom;
+  while (end + 1 < gridRows().length && adjacent.some(field => Boolean(gridRows()[end + 1][field]?.trim()))) end++;
+  if (end === bounds.bottom) return toast("相邻列没有连续内容，请拖动填充柄指定范围");
+  applyFill(fillPlan(bounds), end);
+}, true);
 function asBoolean(value) {
   const normalized = value.trim().toLowerCase();
   if (["是", "true", "1", "yes"].includes(normalized)) return true;
@@ -1302,7 +1441,7 @@ $("#registry-grid").addEventListener("paste", handlePaste);
 function clearSelectedCells() {
   const bounds = rangeBounds();
   if (!bounds) return;
-  if (bounds.left === 3) return toast("状态列由登记结果自动更新，不能手动清空");
+  if (columns()[bounds.left] === "status") return toast("状态列由登记结果自动更新，不能手动清空");
   finishEditing(); closeGiftPicker();
   const updated = structuredClone(rows);
   for (let index = bounds.top; index <= bounds.bottom; index++) {

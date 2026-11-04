@@ -235,3 +235,8 @@ body.sheet-expanded{overflow:hidden;background:#f1f6f3}
 @media(max-width:650px){.retry-card-heading{align-items:flex-start;flex-direction:column}.retry-list{padding:0 14px 14px}#retry-dialog>.retry-heading{padding:18px}#retry-dialog>p,#retry-dialog>.retry-summary{margin:14px}}
 
 .toolbar-gift-scope{display:flex;align-items:center;gap:7px;font-size:12px;white-space:nowrap}.toolbar-gift-scope select{max-width:220px;padding:7px;border:1px solid #cbd9cf;border-radius:5px;background:white}.gift-scope-notice{margin:0;padding:9px 16px;background:#fff6e6;color:#8c662e;font-size:12px}.gift-existing{padding:8px;font-size:12px;background:#f4f7f4;display:flex;gap:8px;justify-content:space-between}
+/* Excel-style fill handle; only editable values are copied. */
+#registry-grid .fill-handle{position:absolute;right:0;bottom:0;width:10px;height:10px;min-width:0;padding:0;border:1px solid white;border-radius:0;background:var(--green);z-index:8;cursor:crosshair;touch-action:none}
+#registry-grid td.fill-preview{background:#dcefe3!important;box-shadow:inset 0 0 0 1px #7da98a}
+.range-filling,.range-filling *{user-select:none!important;cursor:crosshair!important}
+.toolbar{flex-wrap:wrap}.toolbar-actions{flex-wrap:wrap}.add-row-group{flex-shrink:0}

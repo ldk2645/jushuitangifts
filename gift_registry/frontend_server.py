@@ -245,7 +245,7 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
             if path == "/api/config":
                 from . import __version__
                 gifts, group_config, generation = row_store.selection_policy.context()
-                self.send(200, {"app": "gift_registry", "frontend_version": 10, "version": __version__, "token": token, "gifts": gifts,
+                self.send(200, {"app": "gift_registry", "frontend_version": 11, "version": __version__, "token": token, "gifts": gifts,
                                 "catalog_version": generation,
                                 "gift_groups": group_config,
                                 "host_actions_available": self.is_local_access(),
