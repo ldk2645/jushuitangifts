@@ -104,6 +104,19 @@ def validate_rows(rows):
         if not isinstance(gift_ids, list) or len(gift_ids) > 100 or any(not isinstance(item, str) or len(item) > 80 for item in gift_ids):
             raise ValueError("礼品选项格式不正确")
         record["gift_ids"] = list(dict.fromkeys(gift_ids))
+        quantities = row.get("gift_quantities", {})
+        if quantities is None:
+            quantities = {}
+        if not isinstance(quantities, dict):
+            raise ValueError("礼品数量格式不正确")
+        normalized_quantities = {}
+        for code, quantity in quantities.items():
+            if (code not in record["gift_ids"] or type(quantity) is not int or not 1 <= quantity <= 99):
+                raise ValueError("礼品数量必须是已选编码对应的 1 至 99 整数")
+            if quantity > 1:
+                normalized_quantities[code] = quantity
+        if normalized_quantities:
+            record["gift_quantities"] = normalized_quantities
         unmatched = row.get('gift_unmatched', [])
         if not isinstance(unmatched, list) or len(unmatched) > 100 or any(not isinstance(v, str) or len(v) > 500 for v in unmatched):
             raise ValueError('未匹配礼品格式不正确')
@@ -416,7 +429,8 @@ def make_server(port=DEFAULT_PORT, *, store=None, queue=None, catalog=None, netw
     server.network_monitor = network_monitor
     try:
         # 必须先取得端口独占，再恢复任务；重复启动不能修改运行中任务的状态。
-        jobs = queue if queue is not None else RegistrationQueue(DATA_DIR / "registration_jobs")
+        jobs = queue if queue is not None else RegistrationQueue(
+            DATA_DIR / "registration_jobs", catalog_loader=catalog_store.read)
         migrate_legacy_selections(row_store.document['rows'], catalog_store.read(), jobs)
         from .host_management import HostManagement
         management = HostManagement(row_store, jobs)

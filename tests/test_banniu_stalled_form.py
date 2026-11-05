@@ -10,7 +10,8 @@ from gift_registry.banniu_page import BANNIU_REGISTRATION_URL
 from gift_registry.banniu_receipt import BanniuReceiptReader
 from gift_registry.platform_operations import SeleniumOperations
 from gift_registry.registration import RegistrationQueue
-from gift_registry.workflow import OrderSnapshot, PlatformOperationError, RegistrationRequest, SubmissionReceipt
+from gift_registry.workflow import (OrderSnapshot, PlatformOperationError, RegistrationRequest, SubmissionReceipt,
+                                    request_quantities)
 from fakes import FakeOperations
 import test_banniu_form_cleanup as cleanup_cases
 import test_page_reuse as reuse_cases
@@ -23,7 +24,7 @@ class SubmittedFormRecoveryTests(unittest.TestCase):
         page, state, close = cleanup_cases.OwnedFormCleanupTests().form_page()
         page.driver.current_url = BANNIU_REGISTRATION_URL
         page._submitted_form_token = page._owned_form[2]
-        page._attempted.add((REQUEST.order_no, REQUEST.gift_ids))
+        page._attempted.add((REQUEST.order_no, tuple(sorted(zip(REQUEST.gift_ids, request_quantities(REQUEST))))))
         state['selected'] = [gift()]
         page.driver.refresh.side_effect = lambda: state.update(open=False)
         return page, state, close

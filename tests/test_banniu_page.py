@@ -104,22 +104,41 @@ class BanniuPageTests(unittest.TestCase):
     def test_observed_earphone_search_name_is_added_once_and_quantities_still_checked(self):
         records = [gift(商家编码='XS24AMA350021GK001', 货品名称='OWS31蓝牙耳机')]
         page, button, rows = self.search_page(records, records)
-        page._add_gift('XS24AMA350021GK001', '椰球夹耳式耳机', ('XS24AMA350021GK001',), ('椰球夹耳式耳机',))
+        page._add_gift('XS24AMA350021GK001', '椰球夹耳式耳机', 1, ('XS24AMA350021GK001',), ('椰球夹耳式耳机',), (1,))
         button.click.assert_called_once()
         rows[0].click.assert_called_once()
         self.assertFalse(gifts_match([{**records[0], '数量':'2'}], ('XS24AMA350021GK001',), ('椰球夹耳式耳机',)))
 
-    def test_first_search_result_must_match_even_if_later_result_matches(self):
-        page, filter_button, rows = self.search_page([gift(商家编码="wrong"), gift()], [gift()])
+    def test_matching_later_search_result_is_clicked_when_earlier_rows_do_not_match(self):
+        page, filter_button, rows = self.search_page(
+            [gift(商家编码="wrong"), gift(货品名称="平台旧名称"), gift()], [gift()])
+        page._add_gift(SKU, NAME, 1, (SKU,), (NAME,), (1,))
+        filter_button.click.assert_called_once()
+        rows[0].click.assert_not_called()
+        rows[1].click.assert_not_called()
+        rows[2].click.assert_called_once()
+
+    def test_same_code_duplicate_names_choose_row_matching_requested_name(self):
+        records = [gift(货品名称="平台新名称"), gift(货品名称="平台旧名称")]
+        expected_name = "平台旧名称"
+        page, filter_button, rows = self.search_page(records, [gift(货品名称=expected_name)])
+        page._add_gift(SKU, expected_name, 1, (SKU,), (expected_name,), (1,))
+        filter_button.click.assert_called_once()
+        rows[0].click.assert_not_called()
+        rows[1].click.assert_called_once()
+
+    def test_no_row_matches_code_and_name_so_nothing_is_clicked(self):
+        page, filter_button, rows = self.search_page(
+            [gift(商家编码="wrong"), gift(货品名称="其它礼品")], [gift()])
         with self.assertRaises(PlatformOperationError):
-            page._add_gift(SKU, NAME, (SKU,), (NAME,))
+            page._add_gift(SKU, NAME, 1, (SKU,), (NAME,), (1,))
         filter_button.click.assert_called_once()
         for row in rows:
             row.click.assert_not_called()
 
     def test_first_matching_result_is_clicked_once_then_selected_values_are_checked(self):
         page, filter_button, rows = self.search_page([gift(), gift()], [gift()])
-        page._add_gift(SKU, NAME, (SKU,), (NAME,))
+        page._add_gift(SKU, NAME, 1, (SKU,), (NAME,), (1,))
         filter_button.click.assert_called_once()
         rows[0].click.assert_called_once()
         rows[1].click.assert_not_called()
@@ -130,7 +149,7 @@ class BanniuPageTests(unittest.TestCase):
         page.timeout = 1
         stale = Mock()
         page._table.side_effect = chain([([stale], [gift(商家编码="previous-sku")])], repeat((rows, [gift()])))
-        page._add_gift(SKU, NAME, (SKU,), (NAME,))
+        page._add_gift(SKU, NAME, 1, (SKU,), (NAME,), (1,))
         filter_button.click.assert_called_once()
         stale.click.assert_not_called()
         rows[0].click.assert_called_once()
@@ -140,7 +159,7 @@ class BanniuPageTests(unittest.TestCase):
         replacement = Mock()
         page._table.side_effect = chain([(rows, [gift()])], repeat(([replacement], [gift(商家编码="other-sku")])))
         with self.assertRaises(PlatformOperationError):
-            page._add_gift(SKU, NAME, (SKU,), (NAME,))
+            page._add_gift(SKU, NAME, 1, (SKU,), (NAME,), (1,))
         filter_button.click.assert_called_once()
         rows[0].click.assert_not_called()
         replacement.click.assert_not_called()
@@ -172,9 +191,32 @@ class BanniuPageTests(unittest.TestCase):
     def test_bad_selected_quantity_does_not_trigger_second_add(self):
         page, filter_button, rows = self.search_page([gift()], [gift(数量="2")])
         with self.assertRaises(PlatformOperationError):
-            page._add_gift(SKU, NAME, (SKU,), (NAME,))
+            page._add_gift(SKU, NAME, 1, (SKU,), (NAME,), (1,))
         filter_button.click.assert_called_once()
         rows[0].click.assert_called_once()
+
+    def test_gifts_match_uses_explicit_piece_counts(self):
+        self.assertTrue(gifts_match([gift(数量="2")], (SKU,), (NAME,), (2,)))
+        self.assertFalse(gifts_match([gift(数量="2")], (SKU,), (NAME,), (1,)))
+        self.assertTrue(gifts_match([gift(数量="1.0")], (SKU,), (NAME,), (1,)))
+        self.assertFalse(gifts_match([gift(数量="2.5")], (SKU,), (NAME,), (2,)))
+        self.assertFalse(gifts_match([gift(数量="2")], (SKU,), (NAME,), (2, 2)))
+        self.assertFalse(gifts_match([gift(数量="2")], (SKU,), (NAME,), (0,)))
+
+    def test_multi_piece_gift_sets_quantity_then_checks_selected_values(self):
+        page, filter_button, rows = self.search_page([gift()], [gift(数量="2")])
+        page._set_gift_quantity = Mock()
+        page._add_gift(SKU, NAME, 2, (SKU,), (NAME,), (2,))
+        filter_button.click.assert_called_once()
+        rows[0].click.assert_called_once()
+        page._set_gift_quantity.assert_called_once_with(SKU, 2)
+
+    def test_prepare_rejects_invalid_gift_quantities(self):
+        page = BanniuPage(Mock())
+        for quantities in ((0,), (100,), (1, 2), (True,), ("2",)):
+            request = RegistrationRequest("001", (SKU,), (NAME,), None, quantities)
+            with self.subTest(quantities=quantities), self.assertRaisesRegex(PlatformOperationError, "礼品信息"):
+                page.prepare(request, OrderSnapshot("001", True))
 
     def submission_page(self):
         driver = Mock()
@@ -242,6 +284,20 @@ class BanniuPageTests(unittest.TestCase):
         page._validate_prepared.assert_called_once_with(request)
         button.click.assert_called_once()
         reader.wait_for_receipt.assert_called_once_with(request, before, {"0001"}, submitted_at)
+
+    def test_receipt_time_guard_uses_attempt_start_captured_before_preparing_form(self):
+        page, button, reader = self.submission_page()
+        request = RegistrationRequest("0009", (SKU,), (NAME,))
+        before = OrderSnapshot("0009", True)
+        attempt_started_at = datetime(2026, 10, 23, 9, 59, 58)
+        with patch("gift_registry.banniu_receipt.BanniuReceiptReader", return_value=reader), \
+                patch("gift_registry.banniu_page.datetime") as clock:
+            clock.now.return_value = attempt_started_at
+            page.submit(request, before)
+        # 回执时间下限在填写表单之前取一次；提交按钮点击时的瞬时时间不能代替它，
+        # 否则班牛秒级创建时间与本地时钟的±秒偏差会把本单误判为旧任务。
+        clock.now.assert_called_once()
+        reader.wait_for_receipt.assert_called_once_with(request, before, {"0001"}, attempt_started_at)
 
     def test_explicit_retry_rechecks_empty_task_baseline_before_opening_form(self):
         from gift_registry.workflow import RegistrationNotSubmittedError

@@ -175,7 +175,27 @@ function newRowId() {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 function newRow() {
-  return { id: newRowId(), order_no: "", gift: "", gift_ids: [], change_address: false, gift_unmatched: [] };
+  return { id: newRowId(), order_no: "", gift: "", gift_ids: [], gift_quantities: {}, change_address: false, gift_unmatched: [] };
+}
+function giftQuantity(row, id) {
+  const value = row?.gift_quantities?.[id];
+  return Number.isInteger(value) && value > 1 ? Math.min(99, value) : 1;
+}
+function giftQuantityPairs(row) {
+  const ids = [...new Set(row.gift_ids || [])].sort();
+  const pairs = ids.map(id => [id, giftQuantity(row, id)]);
+  return pairs.some(([, quantity]) => quantity !== 1) ? pairs : null;
+}
+function normalizeRow(row) {
+  if (!row || typeof row !== "object") return row;
+  const ids = new Set(row.gift_ids || []), quantities = {};
+  if (row.gift_quantities && typeof row.gift_quantities === "object") {
+    for (const [id, value] of Object.entries(row.gift_quantities)) {
+      if (ids.has(id) && Number.isInteger(value) && value > 1) quantities[id] = Math.min(99, value);
+    }
+  }
+  row.gift_quantities = quantities;
+  return row;
 }
 function normalizeGift(text) { return text.toLowerCase().replace(/[^\p{L}\p{N}]/gu, ""); }
 function similarity(a, b) {
@@ -313,21 +333,27 @@ function matchSpaceGiftParts(text) {
 }
 function matchGifts(text) {
   const context = matchingContext(), cached = context.results.get(text);
-  if (cached) return { ids: [...cached.ids], unmatched: [...cached.unmatched] };
+  if (cached) return { ids: [...cached.ids], unmatched: [...cached.unmatched], quantities: {...cached.quantities} };
   if (giftCatalog.some(gift => normalizeGift(gift.id) === normalizeGift(text.trim()))) {
     const match = resolveGiftPart(text);
-    return {ids: match.id ? [match.id] : [], unmatched: match.id ? [] : [text.trim()]};
+    return {ids: match.id ? [match.id] : [], unmatched: match.id ? [] : [text.trim()],
+      quantities: match.id ? {[match.id]: 1} : {}};
   }
-  const ids = [], unmatched = [];
+  const ids = [], unmatched = [], quantities = {};
   for (const part of splitGiftParts(text)) {
     for (const segment of matchSpaceGiftParts(part)) {
-      if (segment.match.id) { if (!ids.includes(segment.match.id)) ids.push(segment.match.id); }
+      if (segment.match.id) {
+        // 重复出现的同一礼品不再丢弃，按出现次数累加数量（例如“收纳包、收纳包”= 2 件）。
+        const id = segment.match.id, quantity = (quantities[id] || 0) + 1;
+        if (!ids.includes(id)) ids.push(id);
+        quantities[id] = Math.min(99, quantity);
+      }
       else unmatched.push(segment.text);
     }
   }
   if (context.results.size > 2000) context.results.clear();
-  context.results.set(text, { ids: [...ids], unmatched: [...unmatched] });
-  return { ids, unmatched };
+  context.results.set(text, { ids: [...ids], unmatched: [...unmatched], quantities: {...quantities} });
+  return { ids, unmatched, quantities };
 }
 function giftNames(ids) { return ids.map(id => giftCatalog.find(gift => gift.id === id)?.name).filter(Boolean); }
 function unresolvedGiftLabels(row) {
@@ -342,19 +368,54 @@ function unresolvedGiftLabels(row) {
     .flatMap(gift => [gift.id, gift.name, ...(gift.aliases || [])]).map(normalizeGift));
   return matched.unmatched.filter(label => !selectedLabels.has(normalizeGift(label)));
 }
-function assignGifts(row, ids, unmatched = []) {
+function assignGifts(row, ids, unmatched = [], quantities = null) {
   const unique = [...new Set(ids)];
   ensureGiftScope(unique.filter(id => !(row.gift_ids || []).includes(id)));
+  const previous = row.gift_quantities || {};
+  const merged = {};
+  for (const id of unique) {
+    const raw = quantities && Object.prototype.hasOwnProperty.call(quantities, id) ? quantities[id] : previous[id];
+    const quantity = Number.isInteger(raw) && raw > 1 ? Math.min(99, raw) : 1;
+    if (quantity > 1) merged[id] = quantity;
+  }
   row.gift_ids = unique;
+  row.gift_quantities = merged;
   row.gift_unmatched = [...unmatched];
   row.gift = [...giftNames(unique), ...unmatched].join("、");
   row.selection_scope = currentScope();
   row.gift_selection = {source: "confirmed", gift_ids: [...unique], label: giftNames(unique).join("、")};
 }
-function rowSignature(row) { return JSON.stringify([row.id, row.order_no.trim(), [...new Set(row.gift_ids || [])].sort(), row.change_address || false, row.gift_unmatched || []]); }
-function taskIdentity(row) { return JSON.stringify([row.order_no.trim(), [...new Set(row.gift_ids || [])].sort()]); }
-function validGifts(row) { return Boolean(row.gift_ids?.length && !unresolvedGiftLabels(row).length
-  && row.gift_ids.every(id => giftCatalog.some(gift => gift.id === id))); }
+function adjustGiftQuantity(row, id, delta) {
+  if (!(row.gift_ids || []).includes(id)) return;
+  const next = Math.min(99, Math.max(1, giftQuantity(row, id) + delta));
+  const quantities = {...(row.gift_quantities || {})};
+  if (next > 1) quantities[id] = next; else delete quantities[id];
+  row.gift_quantities = quantities;
+  row.selection_scope = currentScope();
+  if (row.gift_selection && typeof row.gift_selection === "object") {
+    row.gift_selection = {...row.gift_selection, source: "confirmed",
+      gift_ids: [...row.gift_ids], label: giftNames(row.gift_ids).join("、")};
+  }
+}
+function rowSignature(row) {
+  const content = [row.id, row.order_no.trim(), [...new Set(row.gift_ids || [])].sort(), row.change_address || false, row.gift_unmatched || []];
+  const quantities = giftQuantityPairs(row);
+  if (quantities) content.push(quantities);
+  return JSON.stringify(content);
+}
+function taskIdentity(row) {
+  const content = [row.order_no.trim(), [...new Set(row.gift_ids || [])].sort()];
+  const quantities = giftQuantityPairs(row);
+  if (quantities) content.push(quantities);
+  return JSON.stringify(content);
+}
+function validGifts(row) {
+  const known = new Set(giftCatalog.map(gift => gift.id));
+  return Boolean(row.gift_ids?.length && !unresolvedGiftLabels(row).length
+    && row.gift_ids.every(id => known.has(id))
+    && Object.entries(row.gift_quantities || {}).every(([id, quantity]) =>
+         row.gift_ids.includes(id) && Number.isInteger(quantity) && quantity >= 1 && quantity <= 99));
+}
 function columns() { return ["order_no", "gift", "status"]; }
 function filled(row) { return Boolean(row.order_no.trim() || row.gift.trim() || row.change_address); }
 function status(row) {
@@ -589,7 +650,13 @@ function renderGiftCell(cell, row, index) {
   button.title = row.gift || "选择或粘贴多个礼品，可用中文逗号、英文逗号、顿号或空格分隔，自动模糊匹配名称或别名";
   const chips = document.createElement("span"); chips.className = "gift-chips";
   const names = giftNames(row.gift_ids || []), unmatched = unresolvedGiftLabels(row);
-  names.forEach((name, index) => { const chip = document.createElement("span"); chip.className = "gift-chip"; chip.textContent = name; chip.title = `${name}（${row.gift_ids[index]}）`; chips.append(chip); });
+  names.forEach((name, index) => {
+    const id = row.gift_ids[index], quantity = giftQuantity(row, id);
+    const chip = document.createElement("span"); chip.className = "gift-chip";
+    chip.textContent = quantity > 1 ? `${name} ×${quantity}` : name;
+    chip.title = `${name}（${id}）${quantity > 1 ? `，数量 ${quantity} 件` : ""}`;
+    chips.append(chip);
+  });
   if (unmatched.length) { const chip = document.createElement("span"); chip.className = "gift-chip unmatched-chip"; chip.textContent = `未匹配：${unmatched.join("、")}`; chips.append(chip); }
   if (!names.length && !unmatched.length) { const placeholder = document.createElement("span"); placeholder.className = "gift-placeholder"; placeholder.textContent = "选择礼品，可多选"; chips.append(placeholder); }
   const caret = document.createElement("span"); caret.className = "gift-caret"; caret.textContent = "⌄";
@@ -637,6 +704,21 @@ async function refreshGiftCatalog() {
   })();
   return catalogRefreshing;
 }
+function createGiftQuantityControl(row, id, name) {
+  const box = document.createElement("span"); box.className = "gift-quantity";
+  const step = delta => event => {
+    event.preventDefault(); event.stopPropagation();
+    remember(); adjustGiftQuantity(row, id, delta); updateGiftRow(row); renderGiftOptions();
+  };
+  const minus = document.createElement("button"), value = document.createElement("b"), plus = document.createElement("button");
+  minus.type = plus.type = "button"; minus.textContent = "−"; plus.textContent = "＋";
+  minus.title = "减少一件"; plus.title = "增加一件";
+  minus.disabled = giftQuantity(row, id) <= 1; plus.disabled = giftQuantity(row, id) >= 99;
+  value.textContent = `×${giftQuantity(row, id)}`; value.title = `${name || id} 当前数量（最多 99 件）`;
+  minus.addEventListener("click", step(-1)); plus.addEventListener("click", step(1));
+  box.append(minus, value, plus);
+  return box;
+}
 function renderGiftOptions() {
   const row = rows.find(row => row.id === pickerRowId);
   if (!row) return closeGiftPicker();
@@ -651,10 +733,12 @@ function renderGiftOptions() {
   const list = $("#gift-options"); list.replaceChildren();
   for (const id of row.gift_ids.filter(id => !candidates.some(item => item.gift.id === id))) {
     const item = document.createElement("div"), remove = document.createElement("button");
-    item.className = "gift-existing"; item.append(document.createTextNode(`${giftNames([id])[0] || id} · ${id}（原已选）`));
+    const name = giftNames([id])[0] || id, quantity = giftQuantity(row, id);
+    item.className = "gift-existing";
+    item.append(document.createTextNode(`${name}${quantity > 1 ? ` ×${quantity}` : ""} · ${id}（原已选）`));
     remove.type = "button"; remove.textContent = "移除";
     remove.addEventListener("click", () => { remember(); assignGifts(row, row.gift_ids.filter(code => code !== id), unresolvedGiftLabels(row)); updateGiftRow(row); renderGiftOptions(); });
-    item.append(remove); list.append(item);
+    item.append(createGiftQuantityControl(row, id, name), remove); list.append(item);
   }
   for (const { gift, count } of candidates) {
     const label = document.createElement("label"), check = document.createElement("input"), text = document.createElement("span"), code = document.createElement("small");
@@ -674,7 +758,9 @@ function renderGiftOptions() {
       frequency.textContent = `${count} 单`; frequency.title = `最近 ${usage.orderCount} 个订单中，有 ${count} 单选择此礼赠`;
       meta.append(frequency);
     }
-    label.append(check, text, meta); list.append(label);
+    label.append(check, text, meta);
+    if (check.checked) label.append(createGiftQuantityControl(row, gift.id, gift.name));
+    list.append(label);
   }
   if (!candidates.length) { const empty = document.createElement("p"); empty.className = "gift-no-results"; empty.textContent = scopeInvalid ? "分组或目录已更新，请重新选择礼品分组" : "当前分组未找到，请切换分组"; list.append(empty); }
   const unmatched = unresolvedGiftLabels(row), notice = $("#gift-unmatched"); notice.replaceChildren(); notice.hidden = !unmatched.length;
@@ -684,7 +770,8 @@ function renderGiftOptions() {
     clear.addEventListener("click", () => { remember(); assignGifts(row, row.gift_ids); updateGiftRow(row); renderGiftOptions(); });
     notice.append(text, clear);
   }
-  $("#gift-count").textContent = `已选 ${row.gift_ids.length} 项`;
+  const totalPieces = row.gift_ids.reduce((sum, id) => sum + giftQuantity(row, id), 0);
+  $("#gift-count").textContent = `已选 ${row.gift_ids.length} 种 · 共 ${totalPieces} 件`;
 }
 function openGiftCreate(fromPicker = false) {
   if (!catalogEditable) return toast("请先重新启动工作台服务，以启用新增礼赠功能", true);
@@ -1194,7 +1281,9 @@ function clipboardContent() {
   const bounds = rangeBounds();
   const giftIds = gridRows().slice(bounds.top, bounds.bottom + 1).map(row => columns().slice(bounds.left, bounds.right + 1)
     .map(field => field === "gift" && validGifts(row) ? [...row.gift_ids] : null));
-  const payload = JSON.stringify({ version: 2, matrix, giftIds });
+  const giftQuantities = gridRows().slice(bounds.top, bounds.bottom + 1).map(row => columns().slice(bounds.left, bounds.right + 1)
+    .map(field => field === "gift" && validGifts(row) ? {...(row.gift_quantities || {})} : null));
+  const payload = JSON.stringify({ version: 2, matrix, giftIds, giftQuantities });
   const text = matrix.map(line => line.map(value => /[\t\r\n"]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value).join("\t")).join("\r\n");
   const encoded = btoa(Array.from(new TextEncoder().encode(payload), byte => String.fromCharCode(byte)).join(""));
   const table = document.createElement("table"); table.dataset.giftRegistryRange = encoded;
@@ -1221,6 +1310,7 @@ function structuredClipboard(data) {
     const payload = JSON.parse(value), matrix = payload.version === 2 ? payload.matrix : payload;
     if (!(Array.isArray(matrix) && matrix.length > 0 && matrix.length <= 10000 && matrix.every(line => Array.isArray(line) && line.length > 0 && line.length <= 7 && line.every(cell => typeof cell === "string")))) return null;
     if (payload.version === 2 && Array.isArray(payload.giftIds)) matrix.giftIds = payload.giftIds;
+    if (payload.version === 2 && Array.isArray(payload.giftQuantities)) matrix.giftQuantities = payload.giftQuantities;
     return matrix;
   } catch { return null; }
 }
@@ -1277,7 +1367,7 @@ function applyFill(plan, end) {
         if (field === "gift") {
           const ids = original.gift_ids || [];
           ensureGiftScope(ids);
-          assignGifts(row, ids, unresolvedGiftLabels(original));
+          assignGifts(row, ids, unresolvedGiftLabels(original), original.gift_quantities);
         } else if (field === "order_no") row.order_no = original.order_no;
       }
       targets.push(row);
@@ -1384,8 +1474,10 @@ function pasteText(text, clipboardMatrix = null) {
     try { if (matrix.some(line => asBoolean(line[2] || ""))) return toast("旧复制内容包含不支持的改地址请求，本次未粘贴；请核对原意", true); }
     catch (error) { return toast(error.message, true); }
     const giftIds = matrix.giftIds;
+    const giftQuantities = matrix.giftQuantities;
     matrix = matrix.map(line => [line[0], line[1], line[originalWidth - 1] || ""]);
     if (giftIds) matrix.giftIds = giftIds.map(line => [line?.[0], line?.[1], null]);
+    if (giftQuantities) matrix.giftQuantities = giftQuantities.map(line => [line?.[0], line?.[1], null]);
   }
   const sourceWidth = Math.max(...matrix.map(line => line.length));
   const mapping = visible;
@@ -1412,8 +1504,9 @@ function pasteText(text, clipboardMatrix = null) {
         if (!field || field === "status") continue;
         if (field === "gift") {
           const codes = matrix.giftIds?.[offset % matrix.length]?.[column % sourceWidth];
-          if (Array.isArray(codes) && codes.length) { ensureGiftScope(codes); assignGifts(updated[target], codes); }
-          else { const match = matchGifts(value); assignGifts(updated[target], match.ids, match.unmatched); }
+          const quantities = matrix.giftQuantities?.[offset % matrix.length]?.[column % sourceWidth];
+          if (Array.isArray(codes) && codes.length) { ensureGiftScope(codes); assignGifts(updated[target], codes, [], quantities || {}); }
+          else { const match = matchGifts(value); assignGifts(updated[target], match.ids, match.unmatched, match.quantities); }
           if (updated[target].gift.length > fields.gift.max) throw new Error("礼品内容过长，请减少单行礼品数量");
         }
         else {
@@ -1516,7 +1609,7 @@ $("#formula-input").addEventListener("change", () => {
     if (value.length > fields[field].max) throw new Error("单元格内容过长");
     if (next === row[field]) return;
     remember();
-    if (field === "gift") { const match = matchGifts(value); assignGifts(row, match.ids, match.unmatched); }
+    if (field === "gift") { const match = matchGifts(value); assignGifts(row, match.ids, match.unmatched, match.quantities); }
     else row[field] = next;
     changed(); render(); focusCell(row.id, field);
   } catch (error) { toast(error.message, true); activate(row.id, field); }
@@ -1586,7 +1679,7 @@ async function refreshExecutionStates() {
           if (epoch !== stateEpoch || sequence !== pollSequence) return;
           // HTTP 等待期间可能又开始编辑，不能用后台清理结果覆盖新的输入。
           if (remoteDraft.revision > revision && version === savedVersion && !saving && draftSyncAllowed()) {
-            revision = remoteDraft.revision; rows = remoteDraft.rows.length ? remoteDraft.rows : [newRow()];
+            revision = remoteDraft.revision; rows = (remoteDraft.rows.length ? remoteDraft.rows : [newRow()]).map(normalizeRow);
             rowStates = remoteDraft.row_states || {}; history.length = 0; selection = null; active = null; render();
           }
         }
@@ -1848,7 +1941,7 @@ async function deleteHostRows(all) {
     if (version !== actionVersion || formulaHasChanges() || editing) {
       conflict = true; throw new Error("删除期间发生了新编辑；已保留当前输入，请复制后刷新查看删除结果");
     }
-    history.push(previous); revision = result.revision; rows = result.rows.length ? result.rows : [newRow()];
+    history.push(previous); revision = result.revision; rows = (result.rows.length ? result.rows : [newRow()]).map(normalizeRow);
     rowStates = result.row_states; active = null; selection = null; render();
     toast(`已删除 ${result.removed} 行草稿订单，备份和任务历史已保留`);
   } catch (error) { toast(error.message, true); }
@@ -1912,7 +2005,7 @@ $("#network-ack").addEventListener("click", async () => {
     $("#picker-manage-groups").hidden = !hostActionsAvailable;
     if (!giftCatalog.length) throw new Error("未配置礼品选项，请重启工作台");
     const document = await api("/api/rows"); revision = document.revision; rowStates = document.row_states || {};
-    rows = document.rows.length ? document.rows : Array.from({ length: 18 }, newRow);
+    rows = (document.rows.length ? document.rows : Array.from({ length: 18 }, newRow)).map(normalizeRow);
     const before = JSON.stringify(rows);
     // Shared drafts keep confirmed codes and unresolved text; loading never reinterprets them with this device's scope.
     initialized = true;

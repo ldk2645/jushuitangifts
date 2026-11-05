@@ -155,7 +155,14 @@ def main():
             assert abs(option_ids.index("N00A0L1LE90DXM5001") - option_ids.index("N00A0L1LE90DXM5001")) >= 10
             driver.find_element(By.CSS_SELECTOR, '#gift-options input[value="N00A090GEU0DXM6O02"]').click()
             driver.find_element(By.CSS_SELECTOR, '#gift-options input[value="N00A0L1LE90DXM5001"]').click()
-            assert "已选 2 项" in driver.find_element(By.ID, "gift-count").text
+            assert "已选 2 种 · 共 2 件" in driver.find_element(By.ID, "gift-count").text
+            # 同一礼品多件：＋ 号把数量加到 2，多件信息应显示在已选标签并写入草稿。
+            driver.find_element(By.XPATH, '//*[@id="gift-options"]//input[@value="N00A090GEU0DXM6O02"]'
+                                          '/ancestor::label[1]//span[contains(@class,"gift-quantity")]/button[last()]').click()
+            wait.until(lambda d: "共 3 件" in d.find_element(By.ID, "gift-count").text)
+            assert driver.execute_script("return giftQuantity(rows.find(row => row.order_no === '00012345678901234567890'), 'N00A090GEU0DXM6O02')") == 2
+            driver.find_element(By.ID, "gift-done").click()
+            assert "×2" in control("gift").text
             driver.save_screenshot(str(output / "gift-picker.png"))
             driver.find_element(By.ID, "gift-done").click()
             driver.execute_script("""
@@ -170,6 +177,7 @@ def main():
             assert not driver.find_elements(By.CSS_SELECTOR, ".address-details")
             # 本版本不能新开改地址；隔离存档载入历史“是”草稿，验证仍可关闭。
             saved()
+            assert store.read()["rows"][0]["gift_quantities"] == {"N00A090GEU0DXM6O02": 2}
             document = store.read()
             document['rows'][0]['change_address'] = True
             store.write(document['revision'], document['rows'])
@@ -367,7 +375,7 @@ def main():
             driver.refresh()
             wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, "#grid-body tr[data-id]")) == 21)
             assert driver.execute_script("return giftCatalog.at(-1)") == added_gift
-            assert driver.execute_script("return matchGifts('隔离礼赠简称')") == {"ids": [added_gift["id"]], "unmatched": []}
+            assert driver.execute_script("return matchGifts('隔离礼赠简称')") == {"ids": [added_gift["id"]], "unmatched": [], "quantities": {added_gift["id"]: 1}}
 
             driver.set_window_size(430, 900)
             driver.save_screenshot(str(output / "mobile.png"))

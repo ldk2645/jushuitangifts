@@ -135,6 +135,40 @@ class HostQueueTests(unittest.TestCase):
         self.assertEqual(len(self.operations.submissions), 2)
         self.assertEqual(self.jobs.states()["other"]["state"], "success")
 
+    def test_explicit_retry_uses_current_catalog_names(self):
+        failure = self.failed()
+        self.operations.modes.clear()
+        updated = [{"id": "SKU-A", "name": "礼品甲（已更正）"},
+                   {"id": "SKU-B", "name": "礼品乙"}]
+        with patch("gift_registry.registration.load_gifts", return_value=updated):
+            self.assertFalse(self.jobs.retry_failed(failure["failure_id"])["reused"])
+            self.jobs.pending.join()
+        self.assertEqual(self.operations.checks[0][0].gift_names, ("礼品甲（已更正）",))
+        self.assertEqual(self.operations.submissions[0].gift_names, ("礼品甲（已更正）",))
+
+    def test_explicit_retry_keeps_frozen_names_when_catalog_is_unreadable(self):
+        failure = self.failed()
+        self.operations.modes.clear()
+        with patch("gift_registry.registration.load_gifts", side_effect=ValueError("catalog unavailable")):
+            self.assertFalse(self.jobs.retry_failed(failure["failure_id"])["reused"])
+            self.jobs.pending.join()
+        self.assertEqual(self.operations.submissions[0].gift_names, ("礼品甲",))
+
+    def test_retry_uses_bound_catalog_instead_of_another_installation(self):
+        self.jobs.close()
+        current = [{"id": "SKU-A", "name": "本工作台名称", "aliases": ["原名称"]}]
+        self.jobs = RegistrationQueue(self.directory, operations=self.operations,
+                                      catalog_loader=lambda: current)
+        failure = self.failed()
+        original = {path.name: path.read_bytes() for path in self.directory.glob("*.json")}
+        self.operations.modes.clear()
+        with patch("gift_registry.registration.load_gifts", side_effect=AssertionError("不应读取全局目录")):
+            self.jobs.retry_failed(failure["failure_id"])
+            self.jobs.pending.join()
+        self.assertEqual(self.operations.submissions[0].gift_names, ("本工作台名称",))
+        for name, content in original.items():
+            self.assertEqual((self.directory / name).read_bytes(), content)
+
     def test_explicit_retry_is_idempotent_and_retains_original_failure(self):
         failure = self.failed()
         original_path = next(self.directory.glob("*.json"))

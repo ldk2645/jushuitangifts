@@ -62,7 +62,9 @@ def build(destination, chrome_relative=None, driver=None, *, candidate=False):
              'stop.bat', 'accounts.bat', 'README.md', 'requirements.txt', 'example.md',
              '便携版使用说明.txt', 'portable-files.sha256.json', 'lan-setup.bat', 'lan-info.bat',
              'lan-disable.bat', 'allow-lan.bat', 'allow-lan.ps1', '局域网使用说明.txt',
-             'settings.bat', 'browser-settings.bat', '账号与浏览器配置说明.txt')
+             'settings.bat', 'browser-settings.bat', '账号与浏览器配置说明.txt',
+             'diagnose-login.bat', 'diagnose-selenium.bat', 'fix-browser-integrity.bat',
+             'verify-honor.bat', 'update-gifts.bat')
     if any((destination / name).exists() for name in names):
         raise ValueError('目标已有项目文件，未覆盖；请使用新的目录或人工备份后处理')
     if (ROOT / 'data' / 'server.pid').exists():
@@ -91,7 +93,9 @@ def build(destination, chrome_relative=None, driver=None, *, candidate=False):
         shutil.copy2(ROOT / name, destination / name)
     shutil.copy2(ROOT / '.gitignore', destination / '.gitignore')
     (destination / 'tools').mkdir()
-    for name in ('build_portable.py', 'catalog_harness.py', 'prepare_v120_rollback.py', 'check_dev_isolation.py'):
+    for name in ('build_portable.py', 'catalog_harness.py', 'prepare_v120_rollback.py', 'check_dev_isolation.py',
+                 'check_login_startup.py', 'check_browser_startup.py', 'fix_browser_integrity.ps1',
+                 'inspect_honor_page.py', 'update_gifts.py'):
         shutil.copy2(ROOT / 'tools' / name, destination / 'tools' / name)
     (destination / 'docs').mkdir()
     for name in ('business-workflow.md', 'automatic-login.md', 'lan.md', 'catalog-name-review-2026-10-28.md',
@@ -102,6 +106,9 @@ def build(destination, chrome_relative=None, driver=None, *, candidate=False):
     (destination / 'config').mkdir()
     write_settings_assets(destination)
     shutil.copy2(ROOT / 'browser-settings.bat', destination / 'browser-settings.bat')
+    for name in ('diagnose-login.bat', 'diagnose-selenium.bat', 'fix-browser-integrity.bat',
+                 'verify-honor.bat', 'update-gifts.bat'):
+        shutil.copy2(ROOT / name, destination / name)
     for name in ('gifts.json', 'gift_groups.local.json'):
         source = ROOT / 'config' / name
         if source.exists():

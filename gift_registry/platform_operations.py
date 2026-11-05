@@ -5,7 +5,8 @@ import time
 from .business_browser import BusinessBrowsers
 from .edition import BANNIU_VERIFIED
 from .jushuitan_page import JushuitanPage
-from .workflow import PlatformOperationError, RegistrationNotSubmittedError, validate_snapshot, verify_new_records
+from .workflow import (PlatformOperationError, RegistrationNotSubmittedError, request_quantities,
+                       validate_snapshot, verify_new_records)
 
 
 class SeleniumOperations:
@@ -74,6 +75,11 @@ class SeleniumOperations:
         return self._banniu().prepare(request, before)
 
     @staticmethod
+    def _task_identity(request):
+        """重登授权标识：订单 + 整组编码及数量，数量不同视为不同登记请求。"""
+        return (request.order_no, tuple(sorted(zip(request.gift_ids, request_quantities(request)))))
+
+    @staticmethod
     def _validate_baseline(request, before):
         validate_snapshot(before, request.order_no)
         if not before.found:
@@ -89,7 +95,7 @@ class SeleniumOperations:
         if self.configured is not True:
             raise PlatformOperationError("自动登记未启用；尚未提交")
         self._validate_baseline(request, before)
-        retry_authorized = self._retry_authorized_task == (request.order_no, tuple(sorted(request.gift_ids)))
+        retry_authorized = self._retry_authorized_task == self._task_identity(request)
         self._retry_authorized_task = None
         options = {"require_distinct_gifts": True} if retry_authorized else {}
         if on_submitted is not None:
@@ -115,7 +121,7 @@ class SeleniumOperations:
             raise PlatformOperationError("班牛旧任务礼品组合无法核对，停止重登")
         # 新的持久化任务拥有新的页面调用保护；不重开浏览器，也不清除旧任务记录。
         self._form_page = None
-        self._retry_authorized_task = (request.order_no, tuple(sorted(request.gift_ids)))
+        self._retry_authorized_task = self._task_identity(request)
         return True
 
     def wait_for_verification(self, request, before, receipt):

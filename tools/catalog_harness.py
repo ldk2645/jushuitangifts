@@ -13,8 +13,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--stdio', action='store_true', help='One JSON request/reply per line; no shell/Python/file-write tools')
     parser.add_argument('--approve', metavar='PLAN_ID', help='Host-only explicit approval after reviewing the exact plan')
+    parser.add_argument('--live', action='store_true', help='启用已核对的 Selenium 商品查询（独立会话）')
+    parser.add_argument('--headless', action='store_true', help='隐藏商品查询浏览器')
     args = parser.parse_args()
-    service = BoundCatalog(ROOT)
+    reader = None
+    if args.live:
+        from gift_registry.product_reader import SeleniumProductReader
+        reader = SeleniumProductReader(headless=args.headless)
+    service = BoundCatalog(ROOT, reader=reader)
     if args.approve:
         print(json.dumps(service.approve(args.approve), ensure_ascii=False)); return
     requests = sys.stdin if args.stdio else [sys.stdin.read()]

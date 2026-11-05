@@ -11,7 +11,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 
-from .workflow import PlatformOperationError, Recipient, RegistrationNotSubmittedError, RegistrationRequest, validate_snapshot
+from .workflow import (PlatformOperationError, Recipient, RegistrationNotSubmittedError, RegistrationRequest,
+                       request_quantities, validate_snapshot)
 from .edition import BANNIU_URL, BANNIU_TITLE
 
 
@@ -85,21 +86,58 @@ def table_records(headers, rows):
     return result
 
 
-def gifts_match(records, gift_ids, gift_names):
-    if len(records) != len(gift_ids) or len(set(gift_ids)) != len(gift_ids):
+def gifts_match(records, gift_ids, gift_names, gift_quantities=None):
+    if (len(records) != len(gift_ids) or len(set(gift_ids)) != len(gift_ids)
+            or len(gift_names) != len(gift_ids)):
         return False
-    expected = dict(zip(gift_ids, gift_names))
-    if len(expected) != len(gift_names) or {row["商家编码"] for row in records} != set(expected):
-        return False
-    for row in records:
-        if row["退换补类型"] != "补发" or not _gift_name_matches(row['商家编码'], row['货品名称'], expected[row['商家编码']]):
+    if gift_quantities is None:
+        quantities = (1,) * len(gift_ids)
+    else:
+        if len(gift_quantities) != len(gift_ids):
             return False
         try:
-            if Decimal(row["数量"]) != Decimal(1) or Decimal(row["退换补商品金额"]) != Decimal(0):
+            quantities = tuple(int(value) for value in gift_quantities)
+        except (TypeError, ValueError):
+            return False
+        if any(value < 1 for value in quantities):
+            return False
+    expected = dict(zip(gift_ids, gift_names))
+    quantity = dict(zip(gift_ids, quantities))
+    if {row["商家编码"] for row in records} != set(expected):
+        return False
+    for row in records:
+        code = row["商家编码"]
+        if row["退换补类型"] != "补发" or not _gift_name_matches(code, row['货品名称'], expected[code]):
+            return False
+        try:
+            if Decimal(row["数量"]) != Decimal(quantity[code]) or Decimal(row["退换补商品金额"]) != Decimal(0):
                 return False
         except InvalidOperation:
             return False
     return True
+
+
+_GIFT_QUANTITY_INPUT = """
+// gift-banniu-quantity-target: locate the editable quantity input of one selected gift row.
+const f=arguments[0], code=arguments[1];
+const table=f.querySelector('#col_27748 .children-box-body > .el-table');
+if(!table) return null;
+const norm=t=>(t||'').replace(/\\s+/g,'').replace(/^[*＊]/,'');
+const headers=[...table.querySelectorAll(':scope > .el-table__header-wrapper th')]
+  .filter(th=>!th.classList.contains('gutter'))
+  .map(th=>(th.querySelector('.cell')||th).textContent||'');
+const index=headers.map(norm).indexOf('数量'), codeIndex=headers.map(norm).indexOf('商家编码');
+if(index<0 || codeIndex<0) return null;
+for(const row of table.querySelectorAll(':scope > .el-table__body-wrapper > table > tbody > tr')){
+  const cells=[...row.querySelectorAll(':scope > td')];
+  if(index>=cells.length || codeIndex>=cells.length) continue;
+  const codeInput=cells[codeIndex].querySelector('input');
+  if(!codeInput || codeInput.value!==code) continue;
+  const input=cells[index].querySelector('input');
+  return input || cells[index];
+}
+return null;
+"""
 
 
 class BanniuPage:
@@ -266,7 +304,8 @@ class BanniuPage:
                 return 'preserved'
             selected = (self._selected_gifts() if self._visible(root, '#col_27748 .children-box-body > .el-table') else [])
             count = len(selected)
-            if not gifts_match(selected, request.gift_ids[:count], request.gift_names[:count]):
+            if not gifts_match(selected, request.gift_ids[:count], request.gift_names[:count],
+                               request_quantities(request)[:count]):
                 return 'preserved'
             if self.driver.execute_script("""
                 // gift-owned-form-can-close: never adopt a pre-existing form or a submit-uncertain form.
@@ -293,7 +332,8 @@ class BanniuPage:
         forms = self._visible(self.driver, '.w-edit-task-dialog')
         if (len(forms) != 1 or forms[0] != root or self.driver.current_url != BANNIU_REGISTRATION_URL
                 or self._value('#col_27724 textarea') != request.order_no
-                or not gifts_match(self._selected_gifts(), request.gift_ids, request.gift_names)):
+                or not gifts_match(self._selected_gifts(), request.gift_ids, request.gift_names,
+                                   request_quantities(request))):
             return False
         if self.driver.execute_script("""
             // gift-submitted-form-can-refresh: only our submitted, untouched form.
@@ -380,7 +420,7 @@ class BanniuPage:
             self._wait(lambda _: not self._visible(self._dialog(), "#col_27748 .child-search-search-task"),
                        "班牛礼品搜索结果未关闭，未继续填写")
 
-    def _add_gift(self, gift_id, gift_name, expected_ids, expected_names):
+    def _add_gift(self, gift_id, gift_name, quantity, expected_ids, expected_names, expected_quantities):
         self._close_search()
         if self._value("#col_27748 .child-search-search-select input") != "商家编码":
             raise PlatformOperationError("班牛礼品搜索方式不是商家编码，未继续填写")
@@ -388,15 +428,42 @@ class BanniuPage:
         self._click_once(self._one("#col_27748 .child-search-search-condition button", root=self._dialog(), text="筛选"))
 
         def first_matching(_):
+            # 同一商家编码可能同时存在新旧名称的多条商品记录；只精确匹配编码和名称，
+            # 不要求它必须是页面首条，也不能退化为按名称相似或其它编码放行。
             rows, values = self._table("#col_27748 .child-search-search-task-table > .el-table")
-            if not rows or values[0]["商家编码"] != gift_id or not _gift_name_matches(gift_id, values[0]['货品名称'], gift_name):
-                return False
-            return rows[0]
+            for row, value in zip(rows, values):
+                if value["商家编码"] == gift_id and _gift_name_matches(gift_id, value['货品名称'], gift_name):
+                    return row
+            return False
 
-        first = self._wait(first_matching, "班牛首条礼品搜索结果与所选编码及名称不符，未添加礼品")
+        first = self._wait(first_matching, "班牛礼品搜索结果中未找到与所选编码及名称一致的商品，未添加礼品")
         self._click_once(first, resolve=lambda: first_matching(self.driver))
-        self._wait(lambda _: gifts_match(self._selected_gifts(), expected_ids, expected_names),
+        if quantity != 1:
+            self._set_gift_quantity(gift_id, quantity)
+        self._wait(lambda _: gifts_match(self._selected_gifts(), expected_ids, expected_names, expected_quantities),
                    "班牛已选礼品、数量或金额与本次请求不一致，未继续填写")
+
+    def _set_gift_quantity(self, gift_id, quantity):
+        """在已加入的礼品行把“数量”改为指定件数（同一礼品多件用一个数量表达）。"""
+        target = self.driver.execute_script(_GIFT_QUANTITY_INPUT, self._dialog(), gift_id)
+        if target is None:
+            raise PlatformOperationError("班牛礼品数量控件未找到，未继续填写")
+        with self._form_action():
+            target.click()
+            target.send_keys(Keys.CONTROL, 'a')
+            target.send_keys(str(quantity))
+
+        def applied(_):
+            for row in self._selected_gifts():
+                if row["商家编码"] != gift_id:
+                    continue
+                try:
+                    return Decimal(row["数量"]) == Decimal(quantity)
+                except InvalidOperation:
+                    return False
+            return False
+
+        self._wait(applied, "班牛礼品数量未生效，未继续填写")
 
     def _address_matches(self, address):
         parts = [self._value(f'#col_27754 input[placeholder="选择{level}"]') for level in ("省", "市", "区")]
@@ -431,7 +498,8 @@ class BanniuPage:
                 or not self._radio_selected("col_27720", "补发")
                 or not self._radio_selected("col_27723", "非原单改地址" if request.recipient else "非原单原地址")
                 or not self._radio_selected("col_27759", "是")
-                or not gifts_match(self._selected_gifts(), request.gift_ids, request.gift_names)):
+                or not gifts_match(self._selected_gifts(), request.gift_ids, request.gift_names,
+                                   request_quantities(request))):
             raise PlatformOperationError("班牛表单最终核对不一致，未提交")
         if request.recipient and (self._value("#col_27757 textarea") != request.recipient.name
                                   or self._value("#col_27758 textarea") != request.recipient.phone
@@ -446,7 +514,10 @@ class BanniuPage:
                 or not isinstance(request.gift_ids, (tuple, list)) or not isinstance(request.gift_names, (tuple, list))
                 or not request.gift_ids or len(request.gift_ids) != len(request.gift_names)
                 or any(not isinstance(value, str) or not value.strip() for value in (*request.gift_ids, *request.gift_names))
-                or len(set(request.gift_ids)) != len(request.gift_ids)):
+                or len(set(request.gift_ids)) != len(request.gift_ids)
+                or not isinstance(request.gift_quantities, (tuple, list))
+                or (request.gift_quantities and len(request.gift_quantities) != len(request.gift_ids))
+                or any(type(value) is not int or not 1 <= value <= 99 for value in request.gift_quantities)):
             raise PlatformOperationError("登记请求缺少有效订单号或礼品信息，未打开班牛表单")
         validate_snapshot(before, request.order_no)
         if not before.found:
@@ -504,9 +575,11 @@ class BanniuPage:
         self._click_once(locate(), resolve=locate)
         self._click_once(self._one('.el-select-dropdown__item[title="赠品补发"]'))
         self._wait(lambda _: self._value("#col_27746 input") == "赠品补发", "班牛问题类型未生效，未继续填写")
-        for index, (gift_id, gift_name) in enumerate(zip(request.gift_ids, request.gift_names), 1):
+        quantities = request_quantities(request)
+        for index, (gift_id, gift_name, quantity) in enumerate(zip(request.gift_ids, request.gift_names, quantities), 1):
             self._prepare_step = "添加礼品"
-            self._add_gift(gift_id, gift_name, request.gift_ids[:index], request.gift_names[:index])
+            self._add_gift(gift_id, gift_name, quantity,
+                           request.gift_ids[:index], request.gift_names[:index], quantities[:index])
         self._close_search()
         if request.recipient:
             self._fill_address(request.recipient)
@@ -517,11 +590,14 @@ class BanniuPage:
         from .banniu_receipt import BanniuReceiptReader
         if request.recipient is not None:
             raise PlatformOperationError("本版本暂不支持改地址；未进行班牛登记")
-        key = (request.order_no, tuple(sorted(request.gift_ids)))
+        key = (request.order_no, tuple(sorted(zip(request.gift_ids, request_quantities(request)))))
         if key in self._attempted:
             raise PlatformOperationError("本次业务已调用登记，禁止再次提交")
         # 持久化防重由外层队列负责；这里再保护同一页面实例的重复调用。
         self._attempted.add(key)
+        # 班牛“创建时间”只有秒级，且与本机时钟可能存在秒级偏差；本单登记表单与任务
+        # 都由本次调用创建，因此回执不能早于本次尝试开始时间，不能用点击提交的瞬时时间。
+        attempt_started_at = datetime.now()
         reader = BanniuReceiptReader(self)
         stage = '查询提交前任务基线'
         click_attempted = False
@@ -542,7 +618,6 @@ class BanniuPage:
             if not button.is_enabled():
                 raise PlatformOperationError("班牛提交按钮不可用；未提交")
             self._require_prepared_session()
-            submitted_at = datetime.now()
             stage = '点击提交或读取回执'
             click_attempted = True
             if self._owned_form is not None:
@@ -553,7 +628,7 @@ class BanniuPage:
             self._wait(lambda _: not self._visible(self.driver, '.w-edit-task-dialog'),
                        "班牛提交后表单未关闭，结果不确定，请人工核查；禁止再次提交")
             self._forget_form()
-            return reader.wait_for_receipt(request, before, previous_ids, submitted_at)
+            return reader.wait_for_receipt(request, before, previous_ids, attempt_started_at)
         except (PlatformOperationError, WebDriverException) as exc:
             cleanup = self._discard_unsubmitted_form(request) if not click_attempted else 'none'
             # 次生登录检查异常只作补充，不能丢失主异常及提交边界。

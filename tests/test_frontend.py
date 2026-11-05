@@ -44,6 +44,17 @@ class RowStoreTests(unittest.TestCase):
     def test_client_cannot_forge_completed_status(self):
         self.assertNotIn("status", validate_rows([{**sample(), "status": "已完成"}])[0])
 
+    def test_gift_quantities_are_validated_and_normalized(self):
+        loaded = validate_rows([{**sample(), "gift_quantities": {"N00A090GEU0DXM6O02": 3}}])[0]
+        self.assertEqual(loaded["gift_quantities"], {"N00A090GEU0DXM6O02": 3})
+        loaded = validate_rows([{**sample(), "gift_quantities": {"N00A090GEU0DXM6O02": 1}}])[0]
+        self.assertNotIn("gift_quantities", loaded)
+        for quantities in ({"OTHER": 2}, {"N00A090GEU0DXM6O02": 0},
+                           {"N00A090GEU0DXM6O02": True}, {"N00A090GEU0DXM6O02": 100},
+                           {"N00A090GEU0DXM6O02": "2"}, []):
+            with self.subTest(quantities=quantities), self.assertRaises(ValueError):
+                validate_rows([{**sample(), "gift_quantities": quantities}])
+
 
 class FrontendHTTPTests(unittest.TestCase):
     def test_server_close_freezes_queue_and_closes_operations_before_releasing_directory(self):

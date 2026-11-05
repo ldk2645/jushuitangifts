@@ -131,6 +131,7 @@ class ReceiptNumberNotReadyError(PlatformOperationError):
 
 def receipt_from_detail(snapshot, request, before, task_id, *, not_before=None):
     from .banniu_page import gifts_match, table_records
+    from .workflow import request_quantities
     if not snapshot:
         return None
     fields = snapshot["fields"]
@@ -138,7 +139,8 @@ def receipt_from_detail(snapshot, request, before, task_id, *, not_before=None):
                 "订单号": request.order_no, "问题类型": "赠品补发", "是否自动确认售后单": "是"}
     if any(fields.get(key) != value for key, value in expected.items()):
         raise PlatformOperationError("班牛已保存任务与本次登记不一致；禁止再次提交")
-    if not gifts_match(table_records(snapshot["headers"], snapshot["rows"]), request.gift_ids, request.gift_names):
+    if not gifts_match(table_records(snapshot["headers"], snapshot["rows"]), request.gift_ids,
+                       request.gift_names, request_quantities(request)):
         raise PlatformOperationError("班牛已保存任务的礼品、数量或金额不一致；禁止再次提交")
     try:
         created = datetime.strptime(fields.get("创建时间", ""), "%Y-%m-%d %H:%M:%S")

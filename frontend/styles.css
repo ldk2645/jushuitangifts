@@ -240,3 +240,12 @@ body.sheet-expanded{overflow:hidden;background:#f1f6f3}
 #registry-grid td.fill-preview{background:#dcefe3!important;box-shadow:inset 0 0 0 1px #7da98a}
 .range-filling,.range-filling *{user-select:none!important;cursor:crosshair!important}
 .toolbar{flex-wrap:wrap}.toolbar-actions{flex-wrap:wrap}.add-row-group{flex-shrink:0}
+
+/* 同一礼品多件：在已选礼品上显示并可增减数量。 */
+.gift-quantity{display:inline-flex;align-items:center;gap:3px;font:11px Consolas,monospace;color:#557a63;flex:0 0 auto}
+.gift-quantity button{width:18px;height:18px;min-width:0;padding:0;border:1px solid #d5e5da;border-radius:3px;background:#f7fbf8;color:#4f7a60;font-size:12px;line-height:1;cursor:pointer}
+.gift-quantity button:disabled{opacity:.35;cursor:default}
+.gift-quantity b{font-weight:500;min-width:22px;text-align:center}
+.gift-option>span.gift-quantity{flex:0 0 auto}
+.gift-option .gift-quantity{margin-left:auto}
+.gift-existing .gift-quantity{margin-left:auto}

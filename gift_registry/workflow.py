@@ -27,6 +27,8 @@ class RegistrationRequest:
     gift_ids: tuple[str, ...]
     gift_names: tuple[str, ...]
     recipient: Recipient | None = None
+    # 与 gift_ids 对齐的每项数量；空元组表示全部为 1（兼容历史调用与任务快照）。
+    gift_quantities: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -65,12 +67,27 @@ class PlatformOperations(Protocol):
         ...
 
 
+def request_quantities(request):
+    """返回与 gift_ids 对齐的每项数量；历史请求未带数量时全部按 1。"""
+    if not request.gift_quantities:
+        return tuple(1 for _ in request.gift_ids)
+    return tuple(request.gift_quantities)
+
+
 def request_from_row(row, catalog):
     names = {item["id"]: item["name"] for item in catalog}
     if row.get("change_address", False):
         raise PlatformOperationError("本版本不支持改地址；未查询或提交。请删除不支持的旧草稿，确认原意后新建原地址订单")
-    return RegistrationRequest(row["order_no"].strip(), tuple(row["gift_ids"]),
-                               tuple(names[identifier] for identifier in row["gift_ids"]), None)
+    ids = tuple(row["gift_ids"])
+    stored = row.get("gift_quantities") or {}
+    if not isinstance(stored, dict):
+        raise PlatformOperationError("礼品数量格式不正确，请重新选择礼品")
+    try:
+        quantities = tuple(int(stored.get(identifier, 1)) for identifier in ids)
+    except (TypeError, ValueError):
+        raise PlatformOperationError("礼品数量格式不正确，请重新选择礼品") from None
+    return RegistrationRequest(row["order_no"].strip(), ids,
+                               tuple(names[identifier] for identifier in ids), None, quantities)
 
 
 def _normalize(value):
@@ -168,8 +185,8 @@ def verify_added_records(request, before, after, expected_ids=(), reference=""):
     for record in added:
         quantities = record.gift_quantities
         actual_quantities.update(dict(zip(record.gift_ids, quantities)))
-    # 前端每项礼品仅可选择一次；同编码在不同新增单据中出现也必须累计。
-    expected_quantities = Counter({identifier: 1 for identifier in request.gift_ids})
+    # 前端每项礼品数量至少为 1；同编码数量按本次请求核对，历史请求默认 1。
+    expected_quantities = Counter(dict(zip(request.gift_ids, request_quantities(request))))
     if actual_quantities != expected_quantities:
         return False, "聚水潭新增信息的礼品或数量与草稿不一致", []
     # 本版本不读取或核对原收件信息；保留显式收件请求的校验供历史记录核验。

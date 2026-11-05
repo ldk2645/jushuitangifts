@@ -7,6 +7,7 @@ import base64
 import json
 import os
 import re
+import unicodedata
 import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -26,6 +27,11 @@ def encoded(value):
 
 def timestamp():
     return datetime.now(timezone.utc).isoformat()
+
+
+def normalize_name(value):
+    """名称比对键：NFKC 后去掉全部空白；仅用于核实比较，不用于存储显示名称。"""
+    return "".join(unicodedata.normalize("NFKC", value).split())
 
 
 class UnconfiguredProductReader:
@@ -118,7 +124,8 @@ class BoundCatalog:
 
     def query(self, codes):
         codes = self._codes(codes)
-        # Independent profile directory; no cookies, DPAPI or account files are loaded.
+        # Reader is selected by the trusted launcher. The live reader uses independent
+        # profiles and session copies; model JSON cannot select a reader or path.
         observations = self.reader.query(codes, self.work / 'browser')
         document = {'version': 1, 'codes': codes, 'observations': observations, 'at': timestamp()}
         identifier = sha256(encoded(document))
@@ -126,7 +133,8 @@ class BoundCatalog:
             self._write(self._work_file('evidence', identifier), encoded(document))
         return {'evidence_id': identifier, **document}
 
-    def _verified_names(self, code, evidence_ids):
+    def _verified_names(self, code, evidence_ids, platforms=('banniu', 'jushuitan')):
+        """按已保存证据返回已要求平台的核实名称：{平台: {名称比对键: {平台原文}}}。"""
         observed = {}
         reasons = []
         for identifier in evidence_ids:
@@ -138,16 +146,22 @@ class BoundCatalog:
                 if entry.get('queried_code') != code:
                     continue
                 platform = entry.get('platform')
+                if platform not in platforms:
+                    continue
                 matches = entry.get('matches', [])
                 if (platform not in ('banniu', 'jushuitan') or entry.get('status') != 'exact'
                         or not matches or any(m.get('code') != code or not isinstance(m.get('name'), str) or not m['name'] for m in matches)):
                     reasons.append('平台未找到、认证/页面不完整或编码不一致')
                     continue
-                names = {m['name'] for m in matches}
+                names = {}
+                for match in matches:
+                    names.setdefault(normalize_name(match['name']), set()).add(match['name'])
                 if len(names) != 1:
                     reasons.append('同编码结果名称冲突'); continue
-                observed.setdefault(platform, set()).update(names)
-        if any(len(names) != 1 for names in observed.values()):
+                target = observed.setdefault(platform, {})
+                for key, raw_names in names.items():
+                    target.setdefault(key, set()).update(raw_names)
+        if any(len(values) != 1 for values in observed.values()):
             reasons.append('多次观察名称冲突')
         return observed, reasons
 
@@ -156,6 +170,11 @@ class BoundCatalog:
         additions = request.get('add_items', [])
         evidence_ids = request.get('evidence_ids', [])
         group_creates = request.get('create_groups', [])
+        platforms = request.get('platforms', ['banniu', 'jushuitan'])
+        if (not isinstance(platforms, list) or not platforms
+                or any(platform not in ('banniu', 'jushuitan') for platform in platforms)
+                or len(set(platforms)) != len(platforms)):
+            raise ValueError('核实平台配置无效')
         if any(not isinstance(value, list) for value in (changes, additions, evidence_ids, group_creates)):
             raise ValueError('变更、证据和新增项必须为列表')
         if len(changes) + len(additions) > 10000 or len(evidence_ids) > 100:
@@ -175,9 +194,10 @@ class BoundCatalog:
                 validate_gift(gift)
                 if gift['id'] in by_code:
                     raise ValueError('新增编码已经存在')
-                names, issues = self._verified_names(gift['id'], evidence_ids)
-                if issues or set(names) != {'banniu', 'jushuitan'} or any(v != {gift['name']} for v in names.values()):
-                    pending.append({'code': gift['id'], 'reason': '新增名称尚未由两平台精确核实'}); continue
+                names, issues = self._verified_names(gift['id'], evidence_ids, platforms)
+                target_key = normalize_name(gift['name'])
+                if issues or set(names) != set(platforms) or any(set(v) != {target_key} for v in names.values()):
+                    pending.append({'code': gift['id'], 'reason': '新增名称尚未由要求的平台精确核实'}); continue
                 catalog.append(deepcopy(gift)); by_code[gift['id']] = catalog[-1]
             for group in group_creates:
                 if not isinstance(group, dict) or set(group) != {'id', 'name'}:
@@ -194,18 +214,21 @@ class BoundCatalog:
                 old = by_code[code]
                 proposed = deepcopy(old)
                 valid_aliases = [a for a in old.get('aliases', []) if not (isinstance(a, str) and not a.strip())]
-                names, issues = self._verified_names(code, evidence_ids)
+                names, issues = self._verified_names(code, evidence_ids, platforms)
                 if 'name' in change and change['name'] != old['name']:
-                    if issues or set(names) != {'banniu', 'jushuitan'} or any(v != {change['name']} for v in names.values()):
-                        pending.append({'code': code, 'reason': '两平台名称缺失或不一致，保留旧名称', 'observed': {p: sorted(n) for p, n in names.items()}})
+                    target_key = normalize_name(change['name'])
+                    if issues or set(names) != set(platforms) or any(set(v) != {target_key} for v in names.values()):
+                        pending.append({'code': code, 'reason': '要求平台名称缺失或不一致，保留旧名称', 'observed': {p: sorted(n) for p, n in names.items()}})
                         continue
                     proposed['name'] = change['name']
                     proposed['aliases'] = list(dict.fromkeys([*valid_aliases, old['name']]))
                 aliases = change.get('aliases_add', [])
                 if not isinstance(aliases, list) or any(not isinstance(a, str) for a in aliases):
                     raise ValueError('别名格式无效')
-                verified = {name for values in names.values() for name in values} | {old['name'], *old.get('aliases', [])}
-                if issues or any(alias not in verified for alias in aliases):
+                verified = {raw for values in names.values() for raws in values.values() for raw in raws}
+                verified |= {old['name'], *old.get('aliases', [])}
+                # 只有明确追加别名时才需要核实依据；仅调整分组的变更不影响名称与别名。
+                if aliases and (issues or any(alias not in verified for alias in aliases)):
                     pending.append({'code': code, 'reason': '别名缺少精确平台核实依据，保留旧配置'}); continue
                 if aliases:
                     proposed['aliases'] = list(dict.fromkeys([*valid_aliases, *proposed.get('aliases', []), *aliases]))
@@ -314,6 +337,8 @@ class BoundCatalog:
                 raise ValueError('预览后文件摘要或分组 revision 已变化，请重新预览与审核')
             journal = {'state': 'pending', 'plan_id': identifier, 'before': current, 'after': plan['after'],
                        'backups': {n: base64.b64encode(raw[n]).decode() for n in FILES}, 'at': timestamp()}
+            # 独立保存每次应用前的完整配置，后续事务不会覆盖之前的恢复依据。
+            self._write(self._work_file('backups', identifier), encoded(journal))
             self._write(self.work / 'transaction.json', encoded(journal))
             try:
                 for name, path in self._paths().items():
@@ -330,7 +355,7 @@ class BoundCatalog:
     def handle(self, request):
         if not isinstance(request, dict): raise ValueError('JSON 输入必须为对象')
         operation = request.get('op', 'plan')
-        allowed = {'query': {'op', 'codes'}, 'plan': {'op', 'changes', 'add_items', 'allow_add_codes', 'evidence_ids', 'create_groups'},
+        allowed = {'query': {'op', 'codes'}, 'plan': {'op', 'changes', 'add_items', 'allow_add_codes', 'evidence_ids', 'create_groups', 'platforms'},
                    'apply': {'op', 'plan_id'}, 'recover': {'op'}, 'status': {'op'}}
         if operation not in allowed or set(request) - allowed[operation]:
             raise ValueError('不支持的操作/字段；不接受路径、脚本、命令或权限修改')

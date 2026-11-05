@@ -58,6 +58,45 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(events[-1]["state"], "failed")
                 self.assertEqual(operations.submissions, [])
 
+    def test_multi_piece_gift_requires_matching_total_quantity(self):
+        row = {**sample(), "gift_quantities": {"N00A090GEU0DXM6O02": 2}}
+        request = request_from_row(row, load_gifts())
+        self.assertEqual(request.gift_quantities, (2, 1))
+        before = OrderSnapshot(request.order_no, True)
+        after = OrderSnapshot(request.order_no, True, (
+            GiftRecord("new", request.gift_ids, gift_quantities=(2, 1)),))
+        self.assertTrue(verify_new_records(request, before, after,
+                                           SubmissionReceipt(True, created_record_ids=("new",)))[0])
+        short = OrderSnapshot(request.order_no, True, (
+            GiftRecord("new", request.gift_ids, gift_quantities=(1, 1)),))
+        self.assertFalse(verify_new_records(request, before, short,
+                                            SubmissionReceipt(True, created_record_ids=("new",)))[0])
+        split = OrderSnapshot(request.order_no, True, (
+            GiftRecord("new-1", (request.gift_ids[0],), gift_quantities=(1,)),
+            GiftRecord("new-2", request.gift_ids, gift_quantities=(1, 1)),))
+        self.assertTrue(verify_new_records(request, before, split,
+                                           SubmissionReceipt(True, created_record_ids=("new-1", "new-2")))[0])
+
+    def test_task_identity_and_signature_account_for_piece_counts(self):
+        from gift_registry.registration import row_signature, task_key
+        base, counted = sample(), {**sample(), "gift_quantities": {"N00A090GEU0DXM6O02": 2}}
+        self.assertNotEqual(task_key(base), task_key(counted))
+        self.assertNotEqual(row_signature(base), row_signature(counted))
+        # 数量为 1 的历史行和未设置数量的历史行保持同一身份，旧防重摘要不变。
+        self.assertEqual(task_key(base), task_key({**sample(), "gift_quantities": {"N00A090GEU0DXM6O02": 1}}))
+        self.assertEqual(row_signature(base), row_signature({**sample(), "gift_quantities": {}}))
+
+    def test_registration_rows_validates_and_normalizes_gift_quantities(self):
+        from gift_registry.registration import registration_rows
+        catalog = load_gifts()
+        row = {**sample(), "gift_quantities": {"N00A090GEU0DXM6O02": 3, "N00A0L1LE90DXM5001": 1}}
+        records = registration_rows([row], catalog)
+        self.assertEqual(records[0]["gift_quantities"], {"N00A090GEU0DXM6O02": 3})
+        for quantities in ({"UNKNOWN": 2}, {"N00A090GEU0DXM6O02": 0},
+                           {"N00A090GEU0DXM6O02": True}, {"N00A090GEU0DXM6O02": 100}):
+            with self.subTest(quantities=quantities), self.assertRaisesRegex(ValueError, "数量"):
+                registration_rows([{**sample(), "gift_quantities": quantities}], catalog)
+
     def test_retry_check_failure_has_its_own_stage_and_never_submits(self):
         for error in (PlatformOperationError('班牛任务列表未就绪'), RuntimeError('private detail')):
             with self.subTest(error=type(error).__name__):

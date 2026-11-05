@@ -7,7 +7,9 @@
   {
     "id": "N00A01012Y0D004701",
     "name": "自拍杆",
-    "aliases": []
+    "aliases": [
+      "自拍杆黑色"
+    ]
   },
   {
     "id": "XS236TA230022YQ001",
@@ -27,7 +29,9 @@
   {
     "id": "XS24A7A350021MY001",
     "name": "智能手表-WS11MAX",
-    "aliases": []
+    "aliases": [
+      "智能手表WS11MAX"
+    ]
   },
   {
     "id": "XS236TA3500218K001",
@@ -62,7 +66,9 @@
   {
     "id": "N00A0206GW0DXM5501",
     "name": "云康宝体脂秤-电池款",
-    "aliases": []
+    "aliases": [
+      "云康宝体脂秤电池款"
+    ]
   },
   {
     "id": "XS236TA3500228V001",
@@ -72,7 +78,9 @@
   {
     "id": "XS235FA350023A1001",
     "name": "一拖四线充电宝-新",
-    "aliases": []
+    "aliases": [
+      "一拖四线充电宝新"
+    ]
   },
   {
     "id": "N01C0L1LE91VSEF01",
@@ -112,7 +120,9 @@
   {
     "id": "XS236TA350023E7001",
     "name": "头戴耳机-SY-T9",
-    "aliases": []
+    "aliases": [
+      "头戴耳机SYT9"
+    ]
   },
   {
     "id": "XS236TA350024YA001",
@@ -142,12 +152,16 @@
   {
     "id": "XS24A6A23002SLS002",
     "name": "荣耀手环11 Lite",
-    "aliases": []
+    "aliases": [
+      "荣耀手环11 Lite鱼子酱"
+    ]
   },
   {
     "id": "XS24A6A23002SLS001",
     "name": "荣耀手环11 Lite",
-    "aliases": []
+    "aliases": [
+      "荣耀手环11 Lite芋泥紫"
+    ]
   },
   {
     "id": "N024124BI734ZZX01",
@@ -172,37 +186,51 @@
   {
     "id": "XS2B3UA35002S70002",
     "name": "荣耀手表6 Pro橡胶表带",
-    "aliases": []
+    "aliases": [
+      "荣耀手表6 Pro橡胶表带黄色"
+    ]
   },
   {
     "id": "XS2B3UA35002S70001",
     "name": "荣耀手表6 Pro橡胶表带",
-    "aliases": []
+    "aliases": [
+      "荣耀手表6 Pro橡胶表带黑色"
+    ]
   },
   {
     "id": "XS2B5AA35002TBU005",
     "name": "荣耀手表6 Pro表带",
-    "aliases": []
+    "aliases": [
+      "荣耀手表6 Pro表带黑色钢"
+    ]
   },
   {
     "id": "XS2B5AA35002TBU001",
     "name": "荣耀手表6 Pro表带",
-    "aliases": []
+    "aliases": [
+      "荣耀手表6 Pro表带黑色皮"
+    ]
   },
   {
     "id": "XS2B5AA35002TBU004",
     "name": "荣耀手表6 Pro表带",
-    "aliases": []
+    "aliases": [
+      "荣耀手表6 Pro表带银色钢"
+    ]
   },
   {
     "id": "XS2B5AA35002TBU002",
     "name": "荣耀手表6 Pro表带",
-    "aliases": []
+    "aliases": [
+      "荣耀手表6 Pro表带黑色硅胶"
+    ]
   },
   {
     "id": "XS2B5AA35002TBU003",
     "name": "荣耀手表6 Pro表带",
-    "aliases": []
+    "aliases": [
+      "荣耀手表6 Pro表带棕色皮"
+    ]
   },
   {
     "id": "XS2B3UA35002S6Z001",
@@ -212,22 +240,30 @@
   {
     "id": "XS236TA23002J2E001",
     "name": "荣耀手表6 Plus 表带赠品",
-    "aliases": []
+    "aliases": [
+      "荣耀手表6 Plus 表带赠品磁吸表带"
+    ]
   },
   {
     "id": "XS236TA23002J2E002",
     "name": "荣耀手表6 Plus 表带赠品",
-    "aliases": []
+    "aliases": [
+      "荣耀手表6 Plus 表带赠品编织表带"
+    ]
   },
   {
     "id": "XS236TA3500214Q003",
     "name": "荣耀手表5 Ultra 表带",
-    "aliases": []
+    "aliases": [
+      "荣耀手表5 Ultra 表带皮表带"
+    ]
   },
   {
     "id": "XS236TA3500214Q002",
     "name": "荣耀手表5 Ultra 表带",
-    "aliases": []
+    "aliases": [
+      "荣耀手表5 Ultra 表带钢表带"
+    ]
   },
   {
     "id": "XS2B3UA350022RR001",
@@ -237,7 +273,9 @@
   {
     "id": "XS2B3UA35002RG6002",
     "name": "荣耀手表 6Plus 钢表带",
-    "aliases": []
+    "aliases": [
+      "荣耀手表 6Plus 钢表带银色"
+    ]
   },
   {
     "id": "N024144DIA34ZZ.001",
@@ -247,47 +285,65 @@
   {
     "id": "XS24AMA2300215T001",
     "name": "荣耀亲选耳机X7e青春版",
-    "aliases": []
+    "aliases": [
+      "荣耀亲选耳机X7e青春版白色"
+    ]
   },
   {
     "id": "XS24AMA2300215T002",
     "name": "荣耀亲选耳机X7e青春版",
-    "aliases": []
+    "aliases": [
+      "荣耀亲选耳机X7e青春版紫色"
+    ]
   },
   {
     "id": "XS2B5AA35002TAW001",
     "name": "荣耀亲选 智能手表6i米兰尼斯表带",
-    "aliases": []
+    "aliases": [
+      "荣耀亲选 智能手表6i米兰尼斯表带银色"
+    ]
   },
   {
     "id": "XS24A7D58002SBR002",
     "name": "荣耀亲选 智能手表6i",
-    "aliases": []
+    "aliases": [
+      "荣耀亲选 智能手表6i白色"
+    ]
   },
   {
     "id": "XS24A7D58002SBR001",
     "name": "荣耀亲选 智能手表6i",
-    "aliases": []
+    "aliases": [
+      "荣耀亲选 智能手表6i黑色"
+    ]
   },
   {
     "id": "N024020B0K34ZZ/T02",
     "name": "荣耀亲选 ROSSINI手表2i",
-    "aliases": []
+    "aliases": [
+      "荣耀亲选 ROSSINI手表2i幻夜黑"
+    ]
   },
   {
     "id": "N024020B0K34ZZ/T01",
     "name": "荣耀亲选 ROSSINI手表2i",
-    "aliases": []
+    "aliases": [
+      "荣耀亲选 ROSSINI手表2i流云紫"
+    ]
   },
   {
     "id": "XS24AMA23001X8J003",
     "name": "荣耀亲选 LCHSE 耳夹式耳机",
-    "aliases": []
+    "aliases": [
+      "荣耀亲选 LCHSE 耳夹式耳机流云紫"
+    ]
   },
   {
     "id": "XS24AMA23001X8J004",
     "name": "荣耀亲选 LCHSE 耳夹式耳机",
-    "aliases": []
+    "aliases": [
+      "荣耀亲选 LCHSE 耳夹式耳机星曜黑"
+    ]
   },
   {
     "id": "XS235FD58002J2J001",
@@ -352,12 +408,16 @@
   {
     "id": "N0OE0Q3ZH2H2020101",
     "name": "荣耀平板MagicPad2 12.3英寸",
-    "aliases": []
+    "aliases": [
+      "荣耀平板MagicPad2 12.3英寸钢化膜"
+    ]
   },
   {
     "id": "N0OE0Q3ZH2H2020102",
     "name": "荣耀平板MagicPad2 12.3英寸",
-    "aliases": []
+    "aliases": [
+      "荣耀平板MagicPad2 12.3英寸保护套"
+    ]
   },
   {
     "id": "N0OE0Q3ZH2H2020301",
@@ -382,12 +442,16 @@
   {
     "id": "XS2B3UA350020K3002",
     "name": "荣耀平板10配件",
-    "aliases": []
+    "aliases": [
+      "荣耀平板10配件钢化膜"
+    ]
   },
   {
     "id": "XS2B3UA350020K3001",
     "name": "荣耀平板10配件",
-    "aliases": []
+    "aliases": [
+      "荣耀平板10配件保护套"
+    ]
   },
   {
     "id": "XS24BSA230023GW001",
@@ -422,7 +486,9 @@
   {
     "id": "N02401010134003Z01",
     "name": "荣耀常规礼品-双肩包",
-    "aliases": []
+    "aliases": [
+      "荣耀常规礼品双肩包"
+    ]
   },
   {
     "id": "XS236TA35002JTR001",
@@ -432,37 +498,51 @@
   {
     "id": "XS2B3UA350024G6001",
     "name": "荣耀X5i手表赠品",
-    "aliases": []
+    "aliases": [
+      "荣耀X5i手表赠品水凝膜"
+    ]
   },
   {
     "id": "XS2B3UA350024G6003",
     "name": "荣耀X5i手表赠品",
-    "aliases": []
+    "aliases": [
+      "荣耀X5i手表赠品紫色"
+    ]
   },
   {
     "id": "XS2B3UA350024G6002",
     "name": "荣耀X5i手表赠品",
-    "aliases": []
+    "aliases": [
+      "荣耀X5i手表赠品青色"
+    ]
   },
   {
     "id": "XS2B3UA35002PBV001",
     "name": "荣耀X5i米兰尼斯磁吸表带",
-    "aliases": []
+    "aliases": [
+      "荣耀X5i米兰尼斯磁吸表带银色"
+    ]
   },
   {
     "id": "XS235JA23002TSN001",
-    "name": "荣耀WIN2系列钢化膜",
-    "aliases": []
+    "name": "荣耀WIN RT2钢化膜",
+    "aliases": [
+      "WIN RT2钢化膜"
+    ]
   },
   {
     "id": "XS235JA23002TSN002",
-    "name": "荣耀WIN2系列钢化膜",
-    "aliases": []
+    "name": "荣耀WIN Turbo2钢化膜",
+    "aliases": [
+      "荣耀WIN Turbo2钢化膜"
+    ]
   },
   {
     "id": "XS235JA23002TSN003",
-    "name": "荣耀WIN2系列钢化膜",
-    "aliases": []
+    "name": "荣耀WIN2钢化膜",
+    "aliases": [
+      "荣耀WIN2钢化膜"
+    ]
   },
   {
     "id": "XS24HZA35002T7P001",
@@ -472,7 +552,9 @@
   {
     "id": "XS24BUA23002HDE001",
     "name": "荣耀Magic-Pencil 4s 白色",
-    "aliases": []
+    "aliases": [
+      "荣耀MagicPencil 4s 白色"
+    ]
   },
   {
     "id": "XS24BSA3500211N001",
@@ -492,17 +574,23 @@
   {
     "id": "XS235JA23002T7Q001",
     "name": "荣耀Magic9系列钢化膜",
-    "aliases": []
+    "aliases": [
+      "Magic9超能版钢化膜"
+    ]
   },
   {
     "id": "XS235JA23002T7Q003",
     "name": "荣耀Magic9系列钢化膜",
-    "aliases": []
+    "aliases": [
+      "Magic9ProMax钢化膜"
+    ]
   },
   {
     "id": "XS235JA23002T7Q002",
     "name": "荣耀Magic9系列钢化膜",
-    "aliases": []
+    "aliases": [
+      "Magic9钢化膜"
+    ]
   },
   {
     "id": "XS236TA230022Q3001",
@@ -527,12 +615,16 @@
   {
     "id": "XS24AMA23002RMG001",
     "name": "荣耀FlyClip 3i 耳夹式耳机",
-    "aliases": []
+    "aliases": [
+      "荣耀FlyClip 3i 耳夹式耳机白色"
+    ]
   },
   {
     "id": "XS24AMA23002RMG004",
     "name": "荣耀FlyClip 3i 耳夹式耳机",
-    "aliases": []
+    "aliases": [
+      "荣耀FlyClip 3i 耳夹式耳机微醺紫"
+    ]
   },
   {
     "id": "XS2B3UA35002RNW001",
@@ -556,13 +648,17 @@
   },
   {
     "id": "XS235JA23002TRC002",
-    "name": "荣耀600系列钢化膜",
-    "aliases": []
+    "name": "荣耀600Pro钢化膜",
+    "aliases": [
+      "荣耀600Pro钢化膜"
+    ]
   },
   {
     "id": "XS235JA23002TRC001",
     "name": "荣耀600系列钢化膜",
-    "aliases": []
+    "aliases": [
+      "荣耀600超级版钢化膜"
+    ]
   },
   {
     "id": "XS2B3UA23002J3D001",
@@ -617,27 +713,37 @@
   {
     "id": "XS2B3UA35002S0M001",
     "name": "皮革鼠标垫",
-    "aliases": []
+    "aliases": [
+      "皮革鼠标垫黑色"
+    ]
   },
   {
     "id": "XS2B4WA23002RRD001",
     "name": "奶龙盲盒",
-    "aliases": []
+    "aliases": [
+      "奶龙盲盒奶龙宅时光系列盲盒"
+    ]
   },
   {
     "id": "XS2B4WA23002RRL001",
     "name": "奶龙挂件",
-    "aliases": []
+    "aliases": [
+      "奶龙挂件钱钱快来"
+    ]
   },
   {
     "id": "XS2B4WA23002RRL002",
     "name": "奶龙挂件",
-    "aliases": []
+    "aliases": [
+      "奶龙挂件送你花花"
+    ]
   },
   {
     "id": "XS2B4WA23002RRL003",
     "name": "奶龙挂件",
-    "aliases": []
+    "aliases": [
+      "奶龙挂件爱你哟"
+    ]
   },
   {
     "id": "AMIUS500JCYB1",
@@ -657,12 +763,16 @@
   {
     "id": "XS24CUA35002SLH001",
     "name": "蓝牙鼠标键盘多功能组合套装",
-    "aliases": []
+    "aliases": [
+      "蓝牙鼠标键盘多功能组合套装黑色"
+    ]
   },
   {
     "id": "XS24CUA35002SLH002",
     "name": "蓝牙鼠标键盘多功能组合套装",
-    "aliases": []
+    "aliases": [
+      "蓝牙鼠标键盘多功能组合套装白色"
+    ]
   },
   {
     "id": "B0TY_STYcixW01",
@@ -712,7 +822,9 @@
   {
     "id": "N00A01012Y0D000W01",
     "name": "抖音-手机支架 白色",
-    "aliases": []
+    "aliases": [
+      "抖音手机支架 白色"
+    ]
   },
   {
     "id": "N0OJ020203HG000201",
@@ -722,17 +834,23 @@
   {
     "id": "XS235ZA3500210W001",
     "name": "磁吸手机散热器 K20",
-    "aliases": []
+    "aliases": [
+      "磁吸手机散热器 K20黑色"
+    ]
   },
   {
     "id": "XS235FA35002U0S001",
     "name": "磁吸三合一移动电源",
-    "aliases": []
+    "aliases": [
+      "磁吸三合一移动电源黑色"
+    ]
   },
   {
     "id": "XS235FA35002U0S002",
     "name": "磁吸三合一移动电源",
-    "aliases": []
+    "aliases": [
+      "磁吸三合一移动电源白色"
+    ]
   },
   {
     "id": "N00A0L1LE90DXM6601",
@@ -772,12 +890,16 @@
   {
     "id": "XS27LBA35002SJ7001",
     "name": "保温杯",
-    "aliases": []
+    "aliases": [
+      "保温杯摩卡咖啡杯"
+    ]
   },
   {
     "id": "XS27LBA35002SJ7002",
     "name": "保温杯",
-    "aliases": []
+    "aliases": [
+      "保温杯拿铁咖啡杯"
+    ]
   },
   {
     "id": "N00A082NGE0DXM6401",
@@ -787,47 +909,65 @@
   {
     "id": "XS236TA35002JWM001",
     "name": "S20智能手表（NFC款）",
-    "aliases": []
+    "aliases": [
+      "S20智能手表（NFC款）银色"
+    ]
   },
   {
     "id": "XS236TA35002JWM002",
     "name": "S20智能手表（NFC款）",
-    "aliases": []
+    "aliases": [
+      "S20智能手表（NFC款）黑色"
+    ]
   },
   {
     "id": "XS24A7A35002PMJ002",
     "name": "S11 Pro Max 智能手表",
-    "aliases": []
+    "aliases": [
+      "S11 Pro Max 智能手表白色"
+    ]
   },
   {
     "id": "XS24A7A35002PMJ001",
     "name": "S11 Pro Max 智能手表",
-    "aliases": []
+    "aliases": [
+      "S11 Pro Max 智能手表黑色"
+    ]
   },
   {
     "id": "XS24A7A35002PMJ003",
     "name": "S11 Pro Max 智能手表",
-    "aliases": []
+    "aliases": [
+      "S11 Pro Max 智能手表米白色"
+    ]
   },
   {
     "id": "XS24AMA350022KH001",
     "name": "RECCI 夹耳耳机REP-W101",
-    "aliases": []
+    "aliases": [
+      "RECCI 夹耳耳机REPW101锖色"
+    ]
   },
   {
     "id": "XS24AMA350022KH002",
     "name": "RECCI 夹耳耳机REP-W101",
-    "aliases": []
+    "aliases": [
+      "RECCI 夹耳耳机REPW101米色"
+    ]
   },
   {
     "id": "XS24AMA35002P65001",
     "name": "Q71耳夹式耳机",
-    "aliases": []
+    "aliases": [
+      "Q71耳夹式耳机黑色"
+    ]
   },
   {
     "id": "XS24AMA35002P65002",
     "name": "Q71耳夹式耳机",
-    "aliases": []
+    "aliases": [
+      "Q71耳夹式耳机白色"
+    ]
   },
   {
     "id": "XS24B6A35002PMF001",
@@ -842,7 +982,9 @@
   {
     "id": "XS236TA23002HZH001",
     "name": "Magicpencil4s (USB-C)",
-    "aliases": []
+    "aliases": [
+      "Magicpencil4s (USBC)"
+    ]
   },
   {
     "id": "XS24BSA230022N4001",
@@ -912,12 +1054,16 @@
   {
     "id": "XS24AMA350022C9001",
     "name": "锐思耳夹耳机",
-    "aliases": []
+    "aliases": [
+      "锐思耳夹耳机米色"
+    ]
   },
   {
     "id": "XS24AMA350022C9002",
     "name": "锐思耳夹耳机",
-    "aliases": []
+    "aliases": [
+      "锐思耳夹耳机锖色"
+    ]
   },
   {
     "id": "XS24AMA35002SHU001",
@@ -952,6 +1098,11 @@
   {
     "id": "XS24BRA35002TJL",
     "name": "荣耀WIN平板腕带支架保护壳",
+    "aliases": []
+  },
+  {
+    "id": "XS26QHA350020WU002",
+    "name": "博锐电动剃须刀",
     "aliases": []
   }
 ]

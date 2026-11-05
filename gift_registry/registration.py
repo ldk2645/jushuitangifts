@@ -92,25 +92,52 @@ def legacy_row_signature(row):
                       ensure_ascii=False, separators=(",", ":"))
 
 
+def _gift_quantity_pairs(row):
+    """返回是否改变了默认数量：[(编码, 数量)]；全部为 1 时返回 None 以保持历史身份摘要不变。"""
+    ids = row.get("gift_ids") or []
+    stored = row.get("gift_quantities") or {}
+    if not isinstance(stored, dict) or not isinstance(ids, (list, tuple)):
+        return None
+    pairs = []
+    for identifier in sorted(set(ids)):
+        if not isinstance(identifier, str):
+            continue
+        try:
+            quantity = int(stored.get(identifier, 1))
+        except (TypeError, ValueError):
+            quantity = 1
+        pairs.append([identifier, max(1, quantity)])
+    return pairs if any(quantity != 1 for _, quantity in pairs) else None
+
+
 def row_signature(row):
-    return json.dumps([row["id"], row["order_no"].strip(), sorted(set(row.get("gift_ids", []))),
-                       row.get("change_address", False), row.get("gift_unmatched", [])],
-                      ensure_ascii=False, separators=(",", ":"))
+    content = [row["id"], row["order_no"].strip(), sorted(set(row.get("gift_ids", []))),
+               row.get("change_address", False), row.get("gift_unmatched", [])]
+    quantities = _gift_quantity_pairs(row)
+    if quantities is not None:
+        content.append(quantities)
+    return json.dumps(content, ensure_ascii=False, separators=(",", ":"))
 
 
 def business_key(row):
     content = [row["order_no"].strip(), sorted(set(row.get("gift_ids", []))), row.get("change_address", False)]
     if row.get("change_address", False):
         content += [row.get("recipient_name", "").strip(), row.get("phone", "").strip(), row.get("address", "").strip()]
+    quantities = _gift_quantity_pairs(row)
+    if quantities is not None:
+        content.append(quantities)
     return hashlib.sha256(json.dumps(content, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def task_key(row):
-    """登记身份只取订单号和整组编码；不改写旧 business_key 或执行历史。"""
+    """登记身份取订单号和整组编码及非默认数量；旧记录（数量均为 1）摘要保持不变。"""
     ids = row.get("gift_ids", [])
     if not isinstance(ids, (list, tuple)) or any(not isinstance(value, str) or not value for value in ids):
         ids = []  # 旧记录编码不完整时保留未知组合，不能从同名礼品猜编码。
     content = [row["order_no"].strip(), sorted(set(ids))]
+    quantities = _gift_quantity_pairs(row)
+    if quantities is not None:
+        content.append(quantities)
     return hashlib.sha256(json.dumps(content, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
@@ -128,12 +155,27 @@ def registration_rows(rows, gifts):
             missing.append("有效礼品选项")
         elif row.get("gift_unmatched") or (not row.get("gift_selection") and row["gift"] != "、".join(names[identifier] for identifier in ids)):
             missing.append("未匹配的礼品需重新选择")
+        quantities = row.get("gift_quantities") or {}
+        if not isinstance(quantities, dict):
+            missing.append("礼品数量格式不正确")
+        elif any(not isinstance(code, str) or type(quantity) is not int or not 1 <= quantity <= 99
+                 for code, quantity in quantities.items()):
+            missing.append("礼品数量必须是 1 至 99 的整数")
+        elif any(code not in ids for code in quantities):
+            missing.append("礼品数量对应了未选择的编码")
         if row.get("change_address", False):
             missing.append("旧草稿请求改地址，本版本不支持；请核对原意后删除该行并新建原地址订单")
         if missing:
             problems.append(f"第 {index} 行：{'、'.join(missing)}")
         record = deepcopy(row)
         record.setdefault('change_address', False)
+        if isinstance(record.get("gift_quantities"), dict):
+            record["gift_quantities"] = {code: quantity for code, quantity in record["gift_quantities"].items()
+                                          if type(quantity) is int and quantity > 1 and code in ids}
+            if not record["gift_quantities"]:
+                record.pop("gift_quantities")
+        else:
+            record.pop("gift_quantities", None)
         for field in ('recipient_name', 'phone', 'address'):
             record.pop(field, None)
         records.append(record)
@@ -145,8 +187,9 @@ def registration_rows(rows, gifts):
 
 
 class RegistrationQueue:
-    def __init__(self, directory, operations=None):
+    def __init__(self, directory, operations=None, *, catalog_loader=None):
         self.directory = Path(directory)
+        self.catalog_loader = catalog_loader
         self.lock = threading.RLock()
         self.pending = queue.Queue()
         self.worker = None
@@ -478,6 +521,24 @@ class RegistrationQueue:
                     results.append({"failure_id": failure_id, "accepted": False, "reason": str(exc)})
             return {"results": results, "row_states": self.states()}
 
+    def _retry_catalog(self, record):
+        """重登沿用失败任务的订单与编码，礼品名称取当前目录，使已更正的名称生效。"""
+        catalog = deepcopy(record["catalog"])
+        if not isinstance(catalog, list):
+            return catalog
+        try:
+            current = {gift["id"]: gift for gift in (self.catalog_loader or load_gifts)() if isinstance(gift, dict)}
+        except Exception:
+            return catalog  # 目录暂时不可读时保留失败任务快照，不猜测名称。
+        refreshed = []
+        for gift in catalog:
+            latest = current.get(gift.get("id")) if isinstance(gift, dict) else None
+            if isinstance(latest, dict) and isinstance(latest.get("name"), str) and latest["name"].strip():
+                gift = {**gift, "name": latest["name"],
+                        "aliases": [alias for alias in latest.get("aliases", []) if isinstance(alias, str)]}
+            refreshed.append(gift)
+        return refreshed
+
     def retry_failed(self, failure_id, *, _batch=False):
         if not isinstance(failure_id, str) or not failure_id or len(failure_id) > 128:
             raise ValueError("请选择有效的失败记录")
@@ -504,7 +565,13 @@ class RegistrationQueue:
                 raise ValueError("本版本不支持改地址登记")
             if not self.configured or not callable(getattr(self.operations, "check_retry_safety", None)):
                 raise ValueError("当前平台尚未接入重登核查，不能重新登记")
-            registration_rows([row], record["catalog"])
+            catalog = self._retry_catalog(record)
+            names = {gift.get("id"): gift.get("name") for gift in catalog if isinstance(gift, dict)}
+            if (isinstance(row.get("gift_ids"), list) and row["gift_ids"]
+                    and all(isinstance(names.get(code), str) and names[code] for code in row["gift_ids"])):
+                # 展示名称随当前目录更新；重登身份仍只由订单号与整组编码决定。
+                row["gift"] = "、".join(names[code] for code in row["gift_ids"])
+            registration_rows([row], catalog)
             prepare = getattr(self.operations, "prepare_start", None)
             try:
                 if callable(prepare):
@@ -514,7 +581,7 @@ class RegistrationQueue:
                             retry_of=failure_id, retry_evidence=deepcopy(record["item"].get("evidence", {})),
                             evidence=deepcopy(record["item"].get("evidence", {})))
                 job = {"version": 3, "id": path.stem, "created_at": now(),
-                       "rows": [row], "gift_catalog": deepcopy(record["catalog"]), "items": [item]}
+                       "rows": [row], "gift_catalog": catalog, "items": [item]}
                 self._save(path, job)
             except Exception as exc:
                 if not self.pending.unfinished_tasks:

@@ -176,10 +176,14 @@ class LoginApp:
                         browser.authentication_cancelled = lambda: self.stopping
                     browser.open()
                     save(site.key)
-                except Exception:
-                    # 不输出异常正文，防止驱动错误包含会话详情。
-                    # 统一交由关闭阶段清理；这里异常不能跳过下一站或丢失自有驱动。
-                    publish(site.key, {"state": "浏览器启动未完成，请关闭助手后重新启动", "ready": False})
+                except Exception as exc:
+                    # 不输出异常正文，防止驱动错误包含会话详情；异常类名足以区分
+                    # “浏览器/驱动没起来”和“页面/登录失败”，便于目标电脑自查。
+                    reason = type(exc).__name__
+                    hint = ('，该平台浏览器窗口或后台进程可能仍占用登录配置，请先关闭后再重试'
+                            if 'SessionNotCreated' in reason else '')
+                    publish(site.key, {"state": f"浏览器启动未完成（{reason}{hint}），请关闭助手后重新启动",
+                                       "ready": False})
             next_save = time.monotonic() + SAVE_INTERVAL
             while not self.stopping:
                 try:
