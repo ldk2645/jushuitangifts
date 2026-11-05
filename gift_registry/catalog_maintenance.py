@@ -151,7 +151,9 @@ class BoundCatalog:
                 matches = entry.get('matches', [])
                 if (platform not in ('banniu', 'jushuitan') or entry.get('status') != 'exact'
                         or not matches or any(m.get('code') != code or not isinstance(m.get('name'), str) or not m['name'] for m in matches)):
-                    reasons.append('平台未找到、认证/页面不完整或编码不一致')
+                    detail = entry.get('reason')
+                    reasons.append(detail if isinstance(detail, str) and detail.strip()
+                                   else '平台未找到、认证/页面不完整或编码不一致')
                     continue
                 names = {}
                 for match in matches:

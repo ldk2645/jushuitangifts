@@ -139,9 +139,18 @@ class SubmittedFormRecoveryTests(unittest.TestCase):
                 queue.start([row(REQUEST.order_no, 'first'), row('0010', 'second')], [{'id': SKU, 'name': NAME}])
                 queue.pending.join()
                 self.assertEqual(queue.states()['first']['state'], 'failed')
-                self.assertEqual(queue.states()['second']['state'], 'success')
+                # 提交结果不确定属于需人工介入的共享环境故障：后续未执行行暂停等待，而不是批量失败。
+                self.assertEqual(queue.states()['second']['state'], 'waiting')
+                self.assertTrue(queue.paused)
                 first = next(r for r in queue._latest_attempts() if r['row']['order_no'] == REQUEST.order_no)
                 self.assertEqual(first['item']['submission_status'], 'uncertain')
+                # 主机明确恢复后，未执行行重新排队；不确定订单不重提，仍保留 failed 防重资格。
+                resumed = queue.resume()
+                self.assertTrue(resumed['resumed'])
+                queue.pending.join()
+                self.assertFalse(queue.paused)
+                self.assertEqual(queue.states()['first']['state'], 'failed')
+                self.assertEqual(queue.states()['second']['state'], 'success')
             with RegistrationQueue(Path(folder), operations=Operations()) as queue:
                 queue.start([row(REQUEST.order_no, 'copy')], [{'id': SKU, 'name': NAME}])
                 queue.pending.join()

@@ -146,6 +146,89 @@ class FrontendHTTPTests(unittest.TestCase):
                 thread.join(timeout=2)
 
 
+class EnvironmentPauseHTTPTests(unittest.TestCase):
+    def test_paused_status_and_explicit_host_resume_endpoint(self):
+        from gift_registry.authentication import AuthenticationRequired
+        from gift_registry.workflow import ManualInterventionRequired
+
+        class Operations(FakeOperations):
+            def __init__(self):
+                super().__init__()
+                self.ready = False
+
+            def query_order(self, order_no):
+                if not self.ready:
+                    raise AuthenticationRequired("SYNTHETIC: 需要人工登录/验证码")
+                return super().query_order(order_no)
+
+            def recover_environment(self):
+                if not self.ready:
+                    raise ManualInterventionRequired("SYNTHETIC: 站点仍未就绪，不能恢复")
+
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            store = RowStore(Path(folder) / "rows.json")
+            operations = Operations()
+            jobs = RegistrationQueue(Path(folder) / "jobs", operations=operations)
+            server = make_server(0, store=store, queue=jobs)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            url = f"http://127.0.0.1:{server.server_port}"
+            try:
+                with urlopen(url + "/api/config") as response:
+                    config = json.load(response); token = config["token"]
+                scope = {"group_id": "", "group_revision": config["gift_groups"]["revision"],
+                         "catalog_version": config["catalog_version"]}
+                rows = [{**sample(), "selection_scope": scope},
+                        {**sample(), "id": "row-2", "order_no": "SYN-ORDER-2", "selection_scope": scope}]
+                save = Request(url + "/api/rows", data=json.dumps({"revision": 0, "rows": rows}).encode(),
+                               method="PUT", headers={"X-CSRF-Token": token})
+                with urlopen(save) as response:
+                    self.assertEqual(json.load(response), {"revision": 1})
+                start = Request(url + "/api/registrations/start",
+                                data=json.dumps({"revision": 1}).encode(), method="POST",
+                                headers={"X-CSRF-Token": token})
+                with urlopen(start) as response:
+                    self.assertEqual(json.load(response)["count"], 2)
+                jobs.pending.join()
+
+                with urlopen(url + "/api/registrations/status") as response:
+                    status = json.load(response)
+                self.assertTrue(status["paused"]["paused"])
+                self.assertEqual(status["paused"]["waiting_count"], 1)
+                self.assertEqual(status["row_states"]["row-1"]["state"], "failed")
+                self.assertEqual(status["row_states"]["row-2"]["state"], "waiting")
+
+                # 写接口仍要求 CSRF；未就绪时恢复被拒绝且保持暂停。
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(Request(url + "/api/registrations/resume", data=b"{}", method="POST"))
+                self.assertEqual(error.exception.code, 403)
+                resume = Request(url + "/api/registrations/resume", data=b"{}", method="POST",
+                                 headers={"X-CSRF-Token": token})
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(resume)
+                self.assertEqual(error.exception.code, 409)
+                self.assertEqual(json.load(error.exception)["code"], "resume_not_ready")
+                with urlopen(url + "/api/registrations/status") as response:
+                    self.assertTrue(json.load(response)["paused"]["paused"])
+
+                # 主机处理登录后明确恢复：未执行行重新排队执行一次，原失败行不重提。
+                operations.ready = True
+                with urlopen(resume) as response:
+                    result = json.load(response)
+                self.assertTrue(result["resumed"])
+                self.assertEqual(result["waiting_count"], 1)
+                jobs.pending.join()
+                with urlopen(url + "/api/registrations/status") as response:
+                    status = json.load(response)
+                self.assertFalse(status["paused"]["paused"])
+                self.assertEqual(status["row_states"]["row-1"]["state"], "failed")
+                self.assertEqual(status["row_states"]["row-2"]["state"], "success")
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+
 class RegistrationTests(unittest.TestCase):
     def test_task_preserves_snapshot_and_repeated_click_is_idempotent(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:

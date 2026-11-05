@@ -11,7 +11,7 @@ from selenium.webdriver.common.by import By
 
 from .credentials import CredentialStore
 from .edition import BANNIU_URL, BANNIU_TITLE, BANNIU_BOARD_FRAGMENT, BANNIU_BOARD_TITLE
-from .workflow import PlatformOperationError
+from .workflow import ManualInterventionRequired, PlatformOperationError
 
 
 ENTRY_URLS = {
@@ -31,7 +31,7 @@ return [...document.querySelectorAll('body *')].some(e=>!e.children.length && vi
 """
 
 
-class AuthenticationRequired(PlatformOperationError):
+class AuthenticationRequired(ManualInterventionRequired):
     """固定安全的认证提示；不含账号、密码、令牌或底层异常正文。"""
 
 

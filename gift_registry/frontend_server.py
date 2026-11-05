@@ -24,10 +24,15 @@ from .sessions import atomic_write
 from .registration import RegistrationQueue, RegistrationStartError
 from .network import NetworkSettings, authorized, valid_access_password
 from .selection import SelectionPolicy, SelectionConflict, catalog_version, migrate_legacy_selections
+from .workflow import ManualInterventionRequired
 
 WEB_DIR = ROOT / "frontend"
 FIELDS = {"order_no": 200, "gift": 500}
 MAX_ROWS = 10000
+MAX_BODY = 5_000_000
+# 拒绝响应发出后，最多再等这么久把已声明的请求体读掉，避免带着未读数据关闭
+# 连接（Windows 会因此发 RST，客户端读响应时表现为 WinError 10053）。
+BODY_DRAIN_TIMEOUT = 2.0
 
 
 class RevisionConflict(ValueError):
@@ -182,6 +187,12 @@ def make_server(port=DEFAULT_PORT, *, store=None, queue=None, catalog=None, netw
         def setup(self):
             super().setup()
             self.connection.settimeout(20)
+            self._body_consumed = False
+
+        def parse_request(self):
+            # keep-alive 连接会复用 handler，每个请求重新判断请求体是否已读。
+            self._body_consumed = False
+            return super().parse_request()
 
         def log_message(self, *_):
             pass
@@ -194,9 +205,61 @@ def make_server(port=DEFAULT_PORT, *, store=None, queue=None, catalog=None, netw
                 return
             access_log.write(code, self.command, self.path, self.headers.get("Host"), self.client_address[0])
 
+        def unread_body_length(self):
+            """返回尚未读取的请求体字节数；0 表示没有请求体；None 表示无法安全判定。"""
+            if self._body_consumed:
+                return 0
+            if self.headers.get_all("Transfer-Encoding", []):
+                # 不实现分块请求体；拒绝后无法按块安全排空。
+                return None
+            values = self.headers.get_all("Content-Length", [])
+            if not values:
+                return 0
+            if len(values) != 1:
+                return None
+            try:
+                length = int(values[0])
+            except (TypeError, ValueError):
+                return None
+            if length < 0 or length > MAX_BODY:
+                # 非法或超大请求体不读取；只能关闭连接。
+                return None
+            return length
+
+        def discard_unread_body(self, length):
+            """有界读掉未读请求体，使连接在客户端发完请求后再正常关闭。
+
+            不再把大量未授权数据收进内存：只按 Content-Length 丢弃，且总时长受
+            BODY_DRAIN_TIMEOUT 限制；超时/断开后仍会关闭连接，不会无限等待。
+            """
+            timeout = self.connection.gettimeout()
+            remaining = length
+            try:
+                self.connection.settimeout(BODY_DRAIN_TIMEOUT)
+                while remaining > 0:
+                    chunk = self.rfile.read(min(remaining, 65536))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+            except OSError:
+                # 客户端提前断开或发送缓慢：响应已经写出，直接关闭即可。
+                pass
+            else:
+                if remaining == 0:
+                    self._body_consumed = True
+            finally:
+                try:
+                    self.connection.settimeout(timeout)
+                except OSError:
+                    pass
+
         def send(self, code, content, content_type="application/json; charset=utf-8", *, challenge=False, filename=None):
             if isinstance(content, dict):
                 content = json.dumps(content, ensure_ascii=False).encode("utf-8")
+            # 未读请求体不能留给下一个 keep-alive 请求；带着未读数据直接关闭
+            # socket 会触发 RST，可能连已写出的拒绝响应一起丢掉（WinError 10053）。
+            # 因此这类响应一律显式关闭连接，并在响应后按 Content-Length 有界排空。
+            unread = self.unread_body_length()
             self.send_response(code)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(content)))
@@ -208,8 +271,17 @@ def make_server(port=DEFAULT_PORT, *, store=None, queue=None, catalog=None, netw
             if challenge:
                 self.send_header('WWW-Authenticate', 'Basic realm="Gift Registry LAN", charset="UTF-8"')
             self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+            if unread != 0:
+                # 提前拒绝（权限/CSRF/地址等）时请求体通常还没读；先声明关闭，
+                # 再在 send_header 之后把客户端正在发送的请求体读完。
+                self.close_connection = True
+                self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(content)
+            if unread:
+                # 先把响应完整写出，再排空请求体；排空期间客户端可能仍在发送。
+                self.wfile.flush()
+                self.discard_unread_body(unread)
 
         def allowed_host(self):
             values = self.headers.get_all('Host', [])
@@ -259,7 +331,7 @@ def make_server(port=DEFAULT_PORT, *, store=None, queue=None, catalog=None, netw
             if path == "/api/config":
                 from . import __version__
                 gifts, group_config, generation = row_store.selection_policy.context()
-                self.send(200, {"app": "gift_registry", "edition": EDITION, "frontend_version": 11, "version": __version__, "token": token, "gifts": gifts,
+                self.send(200, {"app": "gift_registry", "edition": EDITION, "frontend_version": 12, "version": __version__, "token": token, "gifts": gifts,
                                 "catalog_version": generation,
                                 "gift_groups": group_config,
                                 "host_actions_available": self.is_local_access(),
@@ -287,7 +359,8 @@ def make_server(port=DEFAULT_PORT, *, store=None, queue=None, catalog=None, netw
                     self.send(200, {**row_store.read(), "row_states": management.states()})
             elif path == "/api/registrations/status":
                 self.send(200, {"row_states": management.states(), "workflow_configured": jobs.configured,
-                                "draft_revision": row_store.read()["revision"], "server_stopping": self.server.stopping})
+                                "draft_revision": row_store.read()["revision"], "server_stopping": self.server.stopping,
+                                "paused": jobs.pause_snapshot()})
             elif path in ("/api/registrations/failures", "/api/registrations/export-today"):
                 if not self.is_local_access():
                     self.send(403, {"error": "失败重登与日志导出仅允许主机本地访问"})
@@ -349,8 +422,9 @@ def make_server(port=DEFAULT_PORT, *, store=None, queue=None, catalog=None, netw
             starting = self.command == "POST" and path == "/api/registrations/start"
             retrying = self.command == "POST" and path == "/api/registrations/retry"
             retrying_all = self.command == "POST" and path == "/api/registrations/retry-all"
+            resuming = self.command == "POST" and path == "/api/registrations/resume"
             managing = self.command == "POST" and path in {"/api/rows/status", "/api/rows/delete"}
-            if (retrying or retrying_all or managing or cancelling) and not self.is_local_access():
+            if (retrying or retrying_all or managing or cancelling or resuming) and not self.is_local_access():
                 self.send(403, {"error": "主机管理仅允许本机回环地址操作"})
                 return
             adding_gift = self.command == "POST" and path == "/api/gifts"
@@ -362,14 +436,24 @@ def make_server(port=DEFAULT_PORT, *, store=None, queue=None, catalog=None, netw
             if acknowledging_network and (not self.is_local_access() or network_monitor is None):
                 self.send(403, {'error': '网络提醒只能在主机本地核对'})
                 return
-            if not any((starting, retrying, retrying_all, managing, cancelling, adding_gift, updating_groups, acknowledging_network)) and (self.command != "PUT" or path != "/api/rows"):
+            if not any((starting, retrying, retrying_all, resuming, managing, cancelling, adding_gift, updating_groups, acknowledging_network)) and (self.command != "PUT" or path != "/api/rows"):
                 self.send(404, {"error": "接口不存在"})
                 return
             try:
-                length = int(self.headers.get("Content-Length", "0"))
-                if not 0 < length <= 5_000_000:
+                lengths = self.headers.get_all("Content-Length", [])
+                if self.headers.get_all("Transfer-Encoding", []) or len(lengths) != 1:
+                    raise ValueError("请求长度不正确")
+                try:
+                    length = int(lengths[0])
+                except ValueError:
+                    raise ValueError("请求长度不正确") from None
+                if not 0 < length <= MAX_BODY:
                     raise ValueError("保存数据过大，请减少行数")
-                document = json.loads(self.rfile.read(length))
+                raw = self.rfile.read(length)
+                if len(raw) != length:
+                    raise ValueError("请求数据不完整")
+                self._body_consumed = True
+                document = json.loads(raw)
                 if not isinstance(document, dict):
                     raise ValueError("请求数据格式不正确")
                 if acknowledging_network:
@@ -395,6 +479,18 @@ def make_server(port=DEFAULT_PORT, *, store=None, queue=None, catalog=None, netw
                     self.send(200, management.retry(document.get("failure_ids"), batch=True))
                 elif retrying:
                     self.send(200, management.retry([document.get("failure_id")]))
+                elif resuming:
+                    # 主机明确恢复暂停队列：先做只读站点/页面就绪检查，再重新排队未执行项。
+                    try:
+                        result = jobs.resume()
+                    except ManualInterventionRequired as exc:
+                        self.send(409, {"error": str(exc), "code": "resume_not_ready"})
+                        return
+                    except (ValueError, RuntimeError) as exc:
+                        self.send(409, {"error": str(exc), "code": "resume_rejected"})
+                        return
+                    result["row_states"] = management.states()
+                    self.send(200, result)
                 elif starting:
                     with row_store.lock:
                         current = row_store.document

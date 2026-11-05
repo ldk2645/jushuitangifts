@@ -2,11 +2,13 @@
 
 import time
 
+from selenium.common.exceptions import WebDriverException
+
 from .business_browser import BusinessBrowsers
 from .edition import BANNIU_VERIFIED
 from .jushuitan_page import JushuitanPage
-from .workflow import (PlatformOperationError, RegistrationNotSubmittedError, request_quantities,
-                       validate_snapshot, verify_new_records)
+from .workflow import (ManualInterventionRequired, PlatformOperationError, RegistrationNotSubmittedError,
+                       request_quantities, validate_snapshot, verify_new_records)
 
 
 class SeleniumOperations:
@@ -39,6 +41,66 @@ class SeleniumOperations:
         """队列完全空闲或未入队的存档失败时，回收未打开浏览器的预留。"""
         return self.browsers.release_unused_reservation()
 
+    def recover_environment(self):
+        """订单间有界恢复：关闭本工具自有浏览器并重新验证登录与只读页面就绪。
+
+        仅在页面层确认“未触发提交”的可恢复故障后由队列调用；不重放任何提交，也不刷新
+        归属不明或人工修改的表单（那些在页面层已转为需要人工介入）。失败时抛
+        ManualInterventionRequired，由队列暂停后续任务而不是继续消耗整批订单。
+        """
+        close = getattr(self.browsers, "close", None)
+        try:
+            if callable(close):
+                close()
+        except Exception:
+            raise ManualInterventionRequired("共享浏览器无法安全关闭，请人工处理后恢复暂停队列") from None
+        self._query_page = self._form_page = None
+        self._query_driver = self._form_driver = None
+        self._retry_authorized_task = None
+        try:
+            self.prepare_start()
+            jst_browser = self.browsers.get("jushuitan")
+            jst_page = self._jushuitan()
+            jst_page.driver.get(self._order_url())
+            jst_browser.ensure_authenticated(target_url=self._order_url())
+            if getattr(jst_browser, "auth_warning", ""):
+                raise ManualInterventionRequired("聚水潭登录需要人工处理，恢复暂停队列前请先完成登录")
+            jst_page._wait(lambda _: jst_page.driver.execute_script(self._order_ready_script()) is True,
+                           "聚水潭订单页未就绪，无法恢复暂停队列")
+            banniu_browser = self.browsers.get("banniu")
+            page = self._banniu()
+            self._open_banniu_list(page.driver)
+            if getattr(banniu_browser, "auth_warning", ""):
+                raise ManualInterventionRequired("班牛登录需要人工处理，恢复暂停队列前请先完成登录/验证码")
+            page._wait(lambda _: page.driver.execute_script(self._banniu_ready_script()) is True,
+                       "班牛礼赠列表未就绪，无法恢复暂停队列")
+        except PlatformOperationError:
+            self.release_unused_start()
+            raise
+        except Exception:
+            self.release_unused_start()
+            raise ManualInterventionRequired("共享浏览器有界恢复失败，请人工检查登录状态后恢复暂停队列") from None
+
+    @staticmethod
+    def _order_url():
+        from .jushuitan_page import ORDER_URL
+        return ORDER_URL
+
+    @staticmethod
+    def _order_ready_script():
+        from .jushuitan_page import _ORDER_PAGE_READY
+        return _ORDER_PAGE_READY
+
+    @staticmethod
+    def _open_banniu_list(driver):
+        from .banniu_page import _open_registration_list
+        _open_registration_list(driver)
+
+    @staticmethod
+    def _banniu_ready_script():
+        from .banniu_page import _REGISTRATION_LIST_READY
+        return _REGISTRATION_LIST_READY
+
     def _jushuitan(self):
         driver = self.browsers.driver("jushuitan")
         if self._query_page is None or self._query_driver is not driver:
@@ -67,7 +129,13 @@ class SeleniumOperations:
         return self._form_page
 
     def query_order(self, order_no):
-        return self._jushuitan().query_order(order_no)
+        try:
+            return self._jushuitan().query_order(order_no)
+        except PlatformOperationError:
+            raise
+        except WebDriverException:
+            raise ManualInterventionRequired(
+                "聚水潭业务浏览器连接不可用；已暂停后续未执行任务，请主机检查浏览器后恢复暂停队列") from None
 
     def prepare_registration(self, request, before):
         """开发核对用：填写后停在提交前，绝不创建远端任务。"""
@@ -128,7 +196,15 @@ class SeleniumOperations:
         """有界只读复查；新增信息不一致时立即交给统一核验判失败。"""
         previous_ids = {record.record_id for record in before.records}
         for attempt in range(self.verification_queries):
-            after = self.query_order(request.order_no)
+            try:
+                after = self.query_order(request.order_no)
+            except ManualInterventionRequired:
+                raise
+            except PlatformOperationError as exc:
+                # 已提交后的复查页面不可核实：暂停后续未执行任务，由主机确认后再恢复；
+                # 不改变本单已提交状态，也不自动重提。
+                raise ManualInterventionRequired(
+                    f"聚水潭复查页面未就绪，已暂停后续未执行任务（{exc}）；请在主机确认后恢复暂停队列") from None
             success, _, _ = verify_new_records(request, before, after, receipt)
             added = any(record.record_id not in previous_ids for record in after.records)
             if success or added or not after.found:

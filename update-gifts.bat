@@ -10,7 +10,8 @@ if not exist "%PY%" (
   exit /b 1
 )
 echo Reading config\gifts-*.txt; using the first product name row in BanNiu for each code.
-echo The browser may stay open for a few minutes; no order or gift task is submitted.
+echo If BanNiu is not logged in, finish the login in the opened window; the tool waits then continues.
+echo The browser may stay open for several minutes; no order or gift task is submitted.
 echo.
 "%PY%" -X utf8 "tools\update_gifts.py" --interactive %*
 set "RESULT=%ERRORLEVEL%"

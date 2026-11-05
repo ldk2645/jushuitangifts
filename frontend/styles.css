@@ -249,3 +249,12 @@ body.sheet-expanded{overflow:hidden;background:#f1f6f3}
 .gift-option>span.gift-quantity{flex:0 0 auto}
 .gift-option .gift-quantity{margin-left:auto}
 .gift-existing .gift-quantity{margin-left:auto}
+
+/* 共享环境暂停：后续未执行订单保留等待状态，由主机恢复。 */
+.pause-notice{background:#fff8e8;border-color:#eadfc4;color:#7c6335}
+.pause-notice strong{color:#6f5525}
+.pause-notice p{margin:7px 0 0;line-height:1.8}
+.pause-notice .network-notice-actions{align-items:center}
+.pause-notice #resume-queue{background:#8a6a2f;border-color:#8a6a2f;color:#fff}
+.status-badge.paused{background:#fff6e4;color:#8a6a2f;font-weight:600}
+.status-badge.paused:before{background:#c39a4d}

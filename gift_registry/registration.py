@@ -18,6 +18,8 @@ from .workflow import (PlatformOperationError, Workflow, GiftRecord, OrderSnapsh
 
 TERMINAL = {"success", "failed", "skipped", "cancelled"}
 ACTIVE = {"queued", "querying", "submitting", "verifying"}
+WAITING = "waiting"  # 共享环境暂停期间“未执行”的显式状态；不是失败，也不是取消。
+UNEXECUTED = {"queued", WAITING}
 REVIEW_DELAY_SECONDS = 180
 
 
@@ -196,10 +198,17 @@ class RegistrationQueue:
         self.scheduled = set()
         self._closed = False
         self._stopping = False
+        # 暂停状态与任务存档同目录；扩展名不是 .json，不会进入任务文件扫描。
+        self._pause_path = self.directory / ".queue-pause.state"
+        self._paused = None
+        self._pause_signal = None
+        self._recover_attempted = False
         self._directory_lock = _QueueDirectoryLock(self.directory)
         try:
             self.operations = operations if operations is not None else SeleniumOperations()
             self._recover_interrupted()
+            self._paused = self._load_pause()
+            self._normalize_pause_on_start()
             # 复核只执行一次；中断后即使不能确认是否已查询，也不重新派发。
             for path in (self.directory / "auto_reviews").glob("*.json"):
                 record = json.loads(path.read_text(encoding="utf-8"))
@@ -300,6 +309,8 @@ class RegistrationQueue:
             job["state"] = "running"
         elif "queued" in states:
             job["state"] = "queued"
+        elif WAITING in states:
+            job["state"] = "paused"
         else:
             job["state"] = "waiting_for_workflow"
         job["updated_at"] = now()
@@ -327,6 +338,178 @@ class RegistrationQueue:
                     interrupted = True
             if interrupted:
                 self._save(path, job)
+
+    # ---- 共享环境暂停 / 恢复 -------------------------------------------------
+    def _load_pause(self):
+        try:
+            record = json.loads(self._pause_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return record if isinstance(record, dict) and record.get("paused") is True else None
+
+    def _persist_pause(self):
+        payload = self._paused if self._paused is not None else {"paused": False, "updated_at": now()}
+        atomic_write(self._pause_path, json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
+
+    def _normalize_pause_on_start(self):
+        """重启后：有暂停记录则保持暂停；发现孤立 waiting 项则保守转为暂停。"""
+        waiting_paths = [path for path in self._paths()
+                         if any(item.get("state") == WAITING for item in self._load(path)["items"])]
+        if self._paused is None and waiting_paths:
+            self._paused = self._pause_record({
+                'class': 'manual', 'site': 'banniu', 'stage': '重启恢复',
+                'reason': '重启后发现未执行的暂停任务，缺少暂停记录，请主机核查后恢复'})
+            self._persist_pause()
+        if self._paused is not None:
+            self._mark_unexecuted_waiting(self._paused)
+
+    @staticmethod
+    def _pause_record(signal):
+        return {"paused": True,
+                "class": "manual" if signal.get("class") != "recoverable" else "recoverable",
+                "site": str(signal.get("site") or "banniu"),
+                "stage": str(signal.get("stage") or ""),
+                "reason": str(signal.get("reason") or "共享登录/浏览器环境不可用"),
+                "recovery_condition": str(signal.get("recovery_condition")
+                                           or "请在主机处理登录/验证码或浏览器后恢复暂停队列"),
+                "failure_task_id": signal.get("task_id"),
+                "failure_row_id": signal.get("row_id"),
+                "updated_at": now()}
+
+    @property
+    def paused(self):
+        return self._paused is not None
+
+    def pause_snapshot(self):
+        with self.lock:
+            if self._paused is None:
+                return {"paused": False}
+            waiting = sum(1 for path in self._paths()
+                          for item in self._load(path)["items"] if item.get("state") == WAITING)
+            return {**deepcopy(self._paused), "waiting_count": waiting}
+
+    def _mark_unexecuted_waiting(self, record):
+        """把尚未领取的 queued 项落盘为显式 waiting；不伪造 failed/cancelled/success。"""
+        reason = record.get("reason", "共享环境不可用")
+        for path in self._paths():
+            job, changed = self._load(path), False
+            for item in job["items"]:
+                if item.get("state") != "queued":
+                    continue
+                if item.get("submit_attempted") is not False or item.get("attempts") != 0:
+                    continue
+                stamp = now()
+                item.update(state=WAITING, detail=f"共享环境暂停，本项尚未执行；未提交，等待主机恢复（{reason}）",
+                            updated_at=stamp, pause_reason=reason,
+                            pause_site=record.get("site"), pause_stage=record.get("stage"))
+                item.setdefault("events", []).append({"state": WAITING, "at": stamp,
+                                                      "detail": item["detail"], "source": "pause"})
+                changed = True
+            if changed:
+                self._save(path, job)
+
+    def _drain_pending(self):
+        """暂停时排空等待队列，保证 unfinished_tasks 归零、关闭不等待。"""
+        while True:
+            try:
+                path = self.pending.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                if isinstance(path, tuple):
+                    with self.lock:
+                        try:
+                            review = json.loads(path[1].read_text(encoding="utf-8"))
+                        except (OSError, ValueError):
+                            continue
+                        review.update(status="interrupted", detail="共享环境暂停，自动复核未执行；恢复后由主机处理")
+                        atomic_write(path[1], json.dumps(review, ensure_ascii=False).encode("utf-8"))
+                # 任务文件中的 queued 项已由 _mark_unexecuted_waiting 统一标记为 waiting。
+            finally:
+                with self.lock:
+                    self.scheduled.discard(path[0] if isinstance(path, tuple) else path.name)
+                self.pending.task_done()
+
+    def _enter_pause(self, signal):
+        with self.lock:
+            self._pause_signal = None
+            if self._paused is None:
+                self._paused = self._pause_record({**signal, 'updated_at': now()})
+                self._persist_pause()
+                self._mark_unexecuted_waiting(self._paused)
+                self._drain_pending()
+            else:
+                self._mark_unexecuted_waiting(self._paused)
+
+    def _try_recover(self):
+        """可恢复页面故障在订单间边界做一次有界恢复；失败则升级为人工暂停。"""
+        signal = self._pause_signal
+        if signal is None:
+            return True
+        if signal.get("class") != "recoverable" or self._recover_attempted:
+            return False
+        self._recover_attempted = True
+        recover = getattr(self.operations, "recover_environment", None)
+        if not callable(recover):
+            self._pause_signal = None
+            return True
+        try:
+            recover()
+        except Exception as exc:
+            reason = (str(exc) if isinstance(exc, PlatformOperationError)
+                      else "共享浏览器有界恢复失败；请人工检查登录状态")
+            self._pause_signal = {**signal, "class": "manual",
+                                  "recovery_condition": reason + "；请在主机处理后恢复暂停队列"}
+            return False
+        self._pause_signal = None
+        self._recover_attempted = False
+        return True
+
+    def resume(self):
+        """主机明确恢复暂停队列：先只读验证站点/页面就绪，再重新排队未执行项。"""
+        with self.lock:
+            if self._closed:
+                raise RuntimeError("礼赠任务队列已关闭，不能恢复")
+            if self._paused is None:
+                return {"resumed": False, "row_states": self.states()}
+            if self.pending.unfinished_tasks:
+                raise ValueError("暂停队列仍在排空，请稍后再次恢复")
+            paused = deepcopy(self._paused)
+        recover = getattr(self.operations, "recover_environment", None)
+        if callable(recover):
+            recover()  # 失败抛出需人工介入原因；此时不改变暂停状态。
+        with self.lock:
+            if self._closed:
+                raise RuntimeError("礼赠任务队列已关闭，不能恢复")
+            if self._paused is None:
+                return {"resumed": False, "row_states": self.states()}
+            self._paused = None
+            self._pause_signal = None
+            self._recover_attempted = False
+            self._persist_pause()
+            paths, stamp = [], now()
+            for path in self._paths():
+                job, changed = self._load(path), False
+                for item in job["items"]:
+                    if item.get("state") != WAITING:
+                        continue
+                    item.update(state="queued", detail="主机已恢复共享环境，重新排队等待执行",
+                                updated_at=stamp)
+                    item.setdefault("events", []).append({"state": "queued", "at": stamp,
+                                                          "detail": item["detail"], "source": "resume"})
+                    changed = True
+                if changed:
+                    self._save(path, job)
+                    paths.append(path)
+            for path in sorted(set(paths), key=lambda item: (self._load(item)["created_at"], item.name)):
+                if path.name not in self.scheduled:
+                    self.scheduled.add(path.name)
+                    self.pending.put(path)
+            if paths and (self.worker is None or not self.worker.is_alive()):
+                self.worker = threading.Thread(target=self._work, name="registration-worker", daemon=True)
+                self.worker.start()
+            return {"resumed": True, "recovered_from": paused.get("reason"),
+                    "waiting_count": len(paths), "row_states": self.states()}
 
     @staticmethod
     def _schedule_review(item, row):
@@ -469,7 +652,7 @@ class RegistrationQueue:
             return {"failures": candidates, "busy": bool(self.pending.unfinished_tasks)}
 
     def cancel_queued(self, keys):
-        """持锁取消同订单及同礼品组合的未领取快照，不影响其它组合。"""
+        """持锁取消同订单及同礼品组合的未领取快照（含暂停等待项），不影响其它组合。"""
         with self.lock:
             if self._closed:
                 raise ValueError("工作台已关闭，请重新打开")
@@ -478,12 +661,15 @@ class RegistrationQueue:
                 job, changed = self._load(path), False
                 for row, item in zip(job["rows"], job["items"]):
                     key = task_key(row)
-                    if (key not in keys or item["state"] != "queued" or item.get("submit_attempted") is not False
+                    if (key not in keys or item["state"] not in UNEXECUTED or item.get("submit_attempted") is not False
                             or item.get("attempts") != 0 or item.get("evidence", {}).get("submit_clicked")
                             or item.get("submission_status") not in {None, "not_submitted"}):
                         continue
                     stamp = now()
-                    item.update(state="cancelled", detail="主机取消排队，尚未开始平台处理；未提交",
+                    paused_item = item["state"] == WAITING
+                    item.update(state="cancelled",
+                                detail=("主机取消暂停中未执行项，尚未开始平台处理；未提交" if paused_item
+                                        else "主机取消排队，尚未开始平台处理；未提交"),
                                 updated_at=stamp, submission_status="not_submitted", cancelled_by="host")
                     item.setdefault("events", []).append({"state": "cancelled", "at": stamp,
                                                            "detail": item["detail"], "source": "host"})
@@ -547,6 +733,9 @@ class RegistrationQueue:
         with self.lock:
             if self._closed or self._stopping:
                 raise ValueError("工作台正在关闭，不能重新登记")
+            if self._paused is not None:
+                raise ValueError(f"工作台已暂停：{self._paused.get('reason', '共享环境不可用')}；"
+                                 "请主机恢复暂停队列后再重登")
             path = self._request_path(path)
             if path.exists():
                 job = self._load(path)
@@ -619,6 +808,8 @@ class RegistrationQueue:
         with self.lock:
             if self._closed or self._stopping or not self.configured or self.pending.unfinished_tasks:
                 return 0
+            if self._paused is not None:
+                return 0  # 暂停期间不自动排入只读复核，避免与恢复状态竞争。
             scheduled = 0
             for record in self._latest_attempts():
                 item = record["item"]
@@ -791,6 +982,10 @@ class RegistrationQueue:
                 raise RuntimeError("礼赠任务队列已关闭，不能再次开始登记")
             if self._stopping:
                 raise ValueError("工作台正在关闭，不能开始新的礼赠任务")
+            if self._paused is not None:
+                raise RegistrationStartError(
+                    f"工作台已暂停：{self._paused.get('reason', '共享环境不可用')}；"
+                    "请主机处理登录/验证码或页面后在主机恢复暂停队列；本次未启动登记")
             path = self._request_path(path)
             if path.exists():
                 previous_job = self._load(path)
@@ -864,8 +1059,24 @@ class RegistrationQueue:
                 self.pending.task_done()
                 return
             try:
+                with self.lock:
+                    paused = self._paused is not None
                 if isinstance(path, tuple):
-                    self._review_once(path[1])
+                    if paused:
+                        with self.lock:
+                            try:
+                                review = json.loads(path[1].read_text(encoding="utf-8"))
+                            except (OSError, ValueError):
+                                review = None
+                            if review is not None:
+                                review.update(status="interrupted",
+                                              detail="共享环境暂停，自动复核未执行；恢复后由主机处理")
+                                atomic_write(path[1], json.dumps(review, ensure_ascii=False).encode("utf-8"))
+                    else:
+                        self._review_once(path[1])
+                elif paused:
+                    with self.lock:
+                        self._mark_unexecuted_waiting(self._paused)
                 else:
                     self._process(path)
             except Exception:
@@ -879,7 +1090,7 @@ class RegistrationQueue:
                             continue
                         job = self._load(path)
                         for row, item in zip(job["rows"], job["items"]):
-                            if item["state"] not in TERMINAL:
+                            if item["state"] not in TERMINAL and item["state"] != WAITING:
                                 item.update(state="failed", detail="任务处理异常，请人工核查；未自动重试登记", updated_at=now())
                                 self._schedule_review(item, row)
                         self._save(path, job)
@@ -924,11 +1135,17 @@ class RegistrationQueue:
                     target = document["items"][index]
                     target.setdefault("execution_id", uuid.uuid4().hex)
                     evidence = updates.pop("evidence", None)
+                    pause = updates.pop("pause", None)
                     target.update(state=state, updated_at=now(), **updates)
                     if state == "failed":
                         self._schedule_review(target, row)
                     if evidence:
                         target.setdefault("evidence", {}).update(evidence)
+                    if pause:
+                        # 只消费结构化暂停字段；不解析中文 detail 决定是否暂停。
+                        self._pause_signal = {**pause, "task_id": document.get("id"),
+                                              "row_id": row["id"],
+                                              "reason": target.get("detail") or pause.get("recovery_condition")}
                     target["events"].append({"state": state, "at": now(), "detail": target["detail"]})
                     self._save(path, document)
 
@@ -941,3 +1158,8 @@ class RegistrationQueue:
                     report("querying", detail="主机重登核查通过，班牛暂无该订单任务",
                            evidence={"retry_checked": True})
             Workflow(self.operations).execute(row, job["gift_catalog"], report, before_submit=guard)
+            if self._pause_signal is not None:
+                if self._try_recover():
+                    continue  # 有界恢复成功：继续下一独立订单，不重放刚失败的行。
+                self._enter_pause(self._pause_signal)
+                return

@@ -25,7 +25,17 @@ class OwnedFormCleanupTests(unittest.TestCase):
             [state['root']] if state['open'] and selector == '.w-edit-task-dialog'
             else [Mock()] if state['open'] and selector == '#col_27748 .children-box-body > .el-table' else []))
         page._value = Mock(side_effect=lambda _: state['order'])
-        page._selected_gifts = Mock(side_effect=lambda: state['selected'])
+
+        def selected_gifts():
+            # 模拟真实填写路径：表格中已有行都来自本次自动化写入，数量为 1 或已写入目标数量。
+            for row in state['selected']:
+                try:
+                    page._progress_record(row['商家编码'], int(row['数量']))
+                except (KeyError, TypeError, ValueError):
+                    page._progress_record(row.get('商家编码', ''), 1)
+            return state['selected']
+
+        page._selected_gifts = Mock(side_effect=selected_gifts)
         page._one = Mock(return_value=close)
         close.click.side_effect = lambda: state.update(open=False)
         return page, state, close
@@ -45,6 +55,34 @@ class OwnedFormCleanupTests(unittest.TestCase):
         self.assertIsNone(page._owned_form)
         self.assertEqual(page._discard_unsubmitted_form(REQUEST), 'none')
         close.click.assert_called_once()
+
+    def test_interrupted_quantity_form_is_safely_discarded(self):
+        # 本轮复现：请求 2 件、表单只写入默认 1 件时，旧代码把表单永久保留。
+        request = RegistrationRequest(REQUEST.order_no, REQUEST.gift_ids, REQUEST.gift_names, None, (2,))
+        page, state, close = self.form_page()
+        page._track_form(page._owned_form[0], request)
+        state['selected'] = [gift(数量='1')]
+        self.assertEqual(page._discard_unsubmitted_form(request), 'closed')
+        self.assertFalse(state['open'])
+        close.click.assert_called_once()
+
+    def test_intermediate_form_with_unknown_quantity_or_manual_edit_is_preserved(self):
+        request = RegistrationRequest(REQUEST.order_no, REQUEST.gift_ids, REQUEST.gift_names, None, (2,))
+        for mode in ('quantity', 'unknown_gift', 'manual_edit'):
+            page, state, close = self.form_page()
+            page._track_form(page._owned_form[0], request)
+            if mode == 'quantity':
+                state['selected'] = [gift(数量='3')]
+            elif mode == 'unknown_gift':
+                state['selected'] = [gift(商家编码='UNKNOWN-SKU')]
+            else:
+                state['selected'] = [gift(数量='1')]
+                page.driver.execute_script.side_effect = lambda script, *args: (
+                    False if 'gift-owned-form-can-close' in script else True)
+            with self.subTest(mode=mode):
+                self.assertEqual(page._discard_unsubmitted_form(request), 'preserved')
+                self.assertTrue(state['open'])
+                close.click.assert_not_called()
 
     def test_observed_lenovo_name_mapping_is_limited_to_its_exact_code(self):
         record = gift(商家编码='N0800202036T000801', 货品名称='《赠品》联想蓝牙音响')

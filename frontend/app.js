@@ -40,7 +40,7 @@ function acceptCatalogContext(result) {
   giftGroups = groups; giftMatcher = null; renderGroupFilter();
 }
 let hostActionsAvailable = false, groupSelection = new Set(), groupsSaving = false;
-const statusOptions = { "": "全部状态", ready: "待登记", processing: "进行中", success: "成功", failed: "失败", cancelled: "已取消", manual_success: "人工标记成功", manual_failed: "人工标记失败", manual_pending: "人工待核查", skipped: "已跳过", incomplete: "待完善", empty: "空白", queued: "待接入" };
+const statusOptions = { "": "全部状态", ready: "待登记", processing: "进行中", paused: "暂停待恢复", success: "成功", failed: "失败", cancelled: "已取消", manual_success: "人工标记成功", manual_failed: "人工标记失败", manual_pending: "人工待核查", skipped: "已跳过", incomplete: "待完善", empty: "空白", queued: "待接入" };
 function gridRows() { return displayedRows; }
 const recentGiftOrderLimit = 100;
 let pickerGiftUsage = null;
@@ -331,29 +331,45 @@ function matchSpaceGiftParts(text) {
   }
   return parts;
 }
+function withGiftQuantityOverflow(ids, unmatched, quantities) {
+  const result = {ids: [...ids], unmatched: [...unmatched], quantities: {...quantities}};
+  // 同一编码超过 99 件时不截断数量，明确暴露 overflow 让调用方提示并阻止应用。
+  const overflow = Object.entries(result.quantities).filter(([, quantity]) => quantity > 99)
+    .map(([id, quantity]) => ({id, quantity}));
+  if (overflow.length) result.overflow = overflow;
+  return result;
+}
+function giftQuantityLimitMessage(overflow) {
+  const labels = overflow.map(item => `“${giftNames([item.id])[0] || item.id}” ${item.quantity} 件`).join("、");
+  return `礼品数量超过单行上限（每个编码最多 99 件）：${labels}；本次未应用，请减少重复后重试`;
+}
+function assertGiftQuantityLimit(match) {
+  if (match?.overflow?.length) throw new Error(giftQuantityLimitMessage(match.overflow));
+}
 function matchGifts(text) {
   const context = matchingContext(), cached = context.results.get(text);
-  if (cached) return { ids: [...cached.ids], unmatched: [...cached.unmatched], quantities: {...cached.quantities} };
+  if (cached) return withGiftQuantityOverflow(cached.ids, cached.unmatched, cached.quantities);
   if (giftCatalog.some(gift => normalizeGift(gift.id) === normalizeGift(text.trim()))) {
     const match = resolveGiftPart(text);
-    return {ids: match.id ? [match.id] : [], unmatched: match.id ? [] : [text.trim()],
-      quantities: match.id ? {[match.id]: 1} : {}};
+    return withGiftQuantityOverflow(match.id ? [match.id] : [], match.id ? [] : [text.trim()],
+      match.id ? {[match.id]: 1} : {});
   }
   const ids = [], unmatched = [], quantities = {};
   for (const part of splitGiftParts(text)) {
     for (const segment of matchSpaceGiftParts(part)) {
       if (segment.match.id) {
         // 重复出现的同一礼品不再丢弃，按出现次数累加数量（例如“收纳包、收纳包”= 2 件）。
-        const id = segment.match.id, quantity = (quantities[id] || 0) + 1;
+        // 超过 99 件不静默截断；由调用方提示并阻止本次应用。
+        const id = segment.match.id;
         if (!ids.includes(id)) ids.push(id);
-        quantities[id] = Math.min(99, quantity);
+        quantities[id] = (quantities[id] || 0) + 1;
       }
       else unmatched.push(segment.text);
     }
   }
   if (context.results.size > 2000) context.results.clear();
   context.results.set(text, { ids: [...ids], unmatched: [...unmatched], quantities: {...quantities} });
-  return { ids, unmatched, quantities };
+  return withGiftQuantityOverflow(ids, unmatched, quantities);
 }
 function giftNames(ids) { return ids.map(id => giftCatalog.find(gift => gift.id === id)?.name).filter(Boolean); }
 function unresolvedGiftLabels(row) {
@@ -371,10 +387,17 @@ function unresolvedGiftLabels(row) {
 function assignGifts(row, ids, unmatched = [], quantities = null) {
   const unique = [...new Set(ids)];
   ensureGiftScope(unique.filter(id => !(row.gift_ids || []).includes(id)));
+  // undefined/null 表示本次调用未提供数量映射：选择器勾选、取消某礼品时保留其它仍被选中编码的原数量。
+  // 明确提供映射（包括 {}）表示复制/填充/粘贴的真实来源：来源未列出的编码按 1 件覆盖，不能回退到目标行旧数量。
+  const explicitQuantities = quantities !== undefined && quantities !== null;
   const previous = row.gift_quantities || {};
   const merged = {};
   for (const id of unique) {
-    const raw = quantities && Object.prototype.hasOwnProperty.call(quantities, id) ? quantities[id] : previous[id];
+    let raw = 1;
+    if (explicitQuantities) {
+      raw = Object.prototype.hasOwnProperty.call(quantities, id) ? quantities[id] : 1;
+      if (Number.isInteger(raw) && raw > 99) throw new Error(giftQuantityLimitMessage([{id, quantity: raw}]));
+    } else if (Object.prototype.hasOwnProperty.call(previous, id)) raw = previous[id];
     const quantity = Number.isInteger(raw) && raw > 1 ? Math.min(99, raw) : 1;
     if (quantity > 1) merged[id] = quantity;
   }
@@ -424,8 +447,9 @@ function status(row) {
   const complete = row.order_no.trim() && validGifts(row);
   if (complete && rowStates[row.id]?.signature === rowSignature(row)) {
     const state = rowStates[row.id];
-    const labels = { waiting_for_workflow: ["待接入流程", "queued"], queued: ["等待执行", "processing"], querying: ["查询订单", "processing"],
-      submitting: ["正在登记", "processing"], verifying: ["复查确认", "processing"], success: ["成功", "success"], failed: ["失败", "failed"], skipped: ["已跳过", "skipped"], cancelled: ["已取消", "cancelled"] };
+    const labels = { waiting_for_workflow: ["待接入流程", "queued"], queued: ["等待执行", "processing"], waiting: ["暂停待恢复", "paused"],
+      querying: ["查询订单", "processing"], submitting: ["正在登记", "processing"], verifying: ["复查确认", "processing"],
+      success: ["成功", "success"], failed: ["失败", "failed"], skipped: ["已跳过", "skipped"], cancelled: ["已取消", "cancelled"] };
     const [label, type] = labels[state.state] || ["等待执行", "processing"];
     if (state.manual_status) return { label: statusOptions[`manual_${state.manual_status}`], type: `manual_${state.manual_status}`,
       detail: `主机人工标记；自动核验结果：${label}。${state.detail || ""}。不改写自动核验日志；人工成功持续保留并排除重登。` };
@@ -536,7 +560,8 @@ function updateSummary() {
   $("#row-summary").textContent = `共 ${rows.length} 行 · 已填写 ${rows.filter(filled).length} 条${selectedStatus ? ` · 筛选显示 ${displayedRows.length} 行` : ""}`;
   const count = type => rows.filter(row => status(row).type === type).length;
   const manualCount = rows.filter(row => status(row).type.startsWith("manual_")).length;
-  $("#ready-summary").textContent = `待登记 ${count("ready")} · 进行中 ${count("processing")} · 成功 ${count("success")} · 失败 ${count("failed")}${manualCount ? ` · 人工标记 ${manualCount}` : ""}`;
+  const pausedCount = count("paused");
+  $("#ready-summary").textContent = `待登记 ${count("ready")} · 进行中 ${count("processing")} · 成功 ${count("success")} · 失败 ${count("failed")}${pausedCount ? ` · 暂停待恢复 ${pausedCount}` : ""}${manualCount ? ` · 人工标记 ${manualCount}` : ""}`;
   $("#metric-ready").textContent = count("ready");
   $("#metric-success").textContent = count("success");
   $("#metric-failed").textContent = count("failed");
@@ -810,12 +835,15 @@ $("#gift-create-form").addEventListener("submit", async event => {
     const result = await api("/api/gifts", { method: "POST", body: JSON.stringify(gift) });
     giftCatalog = result.gifts; catalogVersion = result.catalog_version; persistScope();
     const row = $("#gift-create-select").checked && createGiftRowId ? rows.find(row => row.id === createGiftRowId) : null;
+    let overflow = null;
     if (row && !scopeInvalid && inGiftGroup(result.gift.id, selectedGiftGroup)) {
       remember();
       const match = matchGifts(unresolvedGiftLabels(row).join("、"));
-      assignGifts(row, [...row.gift_ids, ...match.ids, result.gift.id], match.unmatched); changed();
+      if (match.overflow?.length) overflow = match.overflow;
+      else { assignGifts(row, [...row.gift_ids, ...match.ids, result.gift.id], match.unmatched); changed(); }
     }
     render(); $("#gift-create-dialog").close(); focusAfterGiftCreate(row?.id);
+    if (overflow) return toast(`礼赠已新增；但未匹配内容中礼品数量超限，本次未选中到当前订单。${giftQuantityLimitMessage(overflow)}`, true);
     if (row && !row.gift_ids.includes(result.gift.id)) return toast("礼赠已新增；当前分组不包含此编码，请由主机分配分组后重新选择", true);
     toast(`已新增“${result.gift.name}”${row ? "，并选中到当前订单" : "，可在礼赠列表中选择"}`);
   } catch (reason) { error.textContent = reason.message; error.hidden = false; }
@@ -829,12 +857,13 @@ function statusNode(row) {
   node.className = state.type === "empty" ? "status-empty" : `status-badge ${state.type}`;
   node.textContent = state.label;
   node.title = state.detail || state.label;
-  const queued = rowStates[row.id]?.state === "queued" && rowStates[row.id]?.signature === rowSignature(row);
+  const execution = rowStates[row.id];
+  const queued = (execution?.state === "queued" || execution?.state === "waiting") && execution?.signature === rowSignature(row);
   if (hostActionsAvailable && queued) {
     const wrapper = document.createElement("span"), button = document.createElement("button");
     wrapper.className = "row-status-actions";
     button.type = "button"; button.className = "row-retry row-cancel"; button.textContent = "取消";
-    button.title = "仅取消尚未开始处理的排队任务";
+    button.title = execution?.state === "waiting" ? "取消暂停期间尚未执行的订单，不提交、不计入失败" : "仅取消尚未开始处理的排队任务";
     button.setAttribute("aria-label", "取消此单排队"); button.disabled = hostManaging;
     button.addEventListener("mousedown", event => event.stopPropagation());
     button.addEventListener("click", event => { event.stopPropagation(); openCancellation([row.id]); });
@@ -1309,22 +1338,32 @@ function structuredClipboard(data) {
     if (!value) return null;
     const payload = JSON.parse(value), matrix = payload.version === 2 ? payload.matrix : payload;
     if (!(Array.isArray(matrix) && matrix.length > 0 && matrix.length <= 10000 && matrix.every(line => Array.isArray(line) && line.length > 0 && line.length <= 7 && line.every(cell => typeof cell === "string")))) return null;
-    if (payload.version === 2 && Array.isArray(payload.giftIds)) matrix.giftIds = payload.giftIds;
-    if (payload.version === 2 && Array.isArray(payload.giftQuantities)) matrix.giftQuantities = payload.giftQuantities;
+    // 私有编码/数量矩阵必须与文本矩阵逐行对齐；行数不一致时不能猜测对应关系，退回纯文本匹配（每种 1 件）。
+    if (payload.version === 2 && Array.isArray(payload.giftIds) && payload.giftIds.length === matrix.length) matrix.giftIds = payload.giftIds;
+    if (payload.version === 2 && Array.isArray(payload.giftQuantities) && payload.giftQuantities.length === matrix.length) matrix.giftQuantities = payload.giftQuantities;
     return matrix;
   } catch { return null; }
 }
 function textEditingTarget(target) {
   return target?.closest?.("#formula-input,#gift-picker") || (target?.tagName === "INPUT" && !target.readOnly);
 }
-function markCopied() { $("#registry-grid").classList.add("is-copied"); toast("已复制选中区域，可粘贴到 Excel 或其他单元格"); }
+function copiedRangeHasQuantities(content) {
+  return Boolean(content?.giftQuantities?.some(line => Array.isArray(line) && line.some(cell =>
+    cell && Object.values(cell).some(quantity => Number.isInteger(quantity) && quantity > 1))));
+}
+function markCopied(content = null) {
+  $("#registry-grid").classList.add("is-copied");
+  // 纯文本/Excel 往返只有名称，数量仅存在于私有剪贴板元数据；明确提示这条限制，不把 ×2 写进名称。
+  if (copiedRangeHasQuantities(content)) toast("已复制选中区域；同一礼品多件仅在本工作台内粘贴时完整保留，粘贴到 Excel 或纯文本会按每种 1 件记录");
+  else toast("已复制选中区域，可粘贴到 Excel 或其他单元格");
+}
 document.addEventListener("copy", event => {
   if (!initialized || (!forceRangeCopy && (!event.target.closest?.("#registry-grid") || textEditingTarget(event.target)))) return;
   const content = clipboardContent();
   if (!content || !event.clipboardData) return;
   event.preventDefault(); event.clipboardData.setData("text/plain", content.text); event.clipboardData.setData("text/html", content.html);
   try { event.clipboardData.setData(rangeClipboardType, content.json); } catch { /* HTML 同时携带区域边界及空白单元格。 */ }
-  markCopied();
+  markCopied(content);
 });
 async function copySelectedRange() {
   finishEditing();
@@ -1334,7 +1373,7 @@ async function copySelectedRange() {
     if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
       await navigator.clipboard.write([new ClipboardItem({ "text/plain": new Blob([content.text], { type: "text/plain" }), "text/html": new Blob([content.html], { type: "text/html" }) })]);
     } else await navigator.clipboard.writeText(content.text);
-    markCopied();
+    markCopied(content);
   } catch {
     forceRangeCopy = true;
     try { if (!document.execCommand("copy")) throw new Error(); }
@@ -1367,7 +1406,8 @@ function applyFill(plan, end) {
         if (field === "gift") {
           const ids = original.gift_ids || [];
           ensureGiftScope(ids);
-          assignGifts(row, ids, unresolvedGiftLabels(original), original.gift_quantities);
+          // 明确传入来源数量映射（默认 1 件为 {}）：目标行旧数量必须被来源数量覆盖。
+          assignGifts(row, ids, unresolvedGiftLabels(original), original.gift_quantities || {});
         } else if (field === "order_no") row.order_no = original.order_no;
       }
       targets.push(row);
@@ -1459,12 +1499,23 @@ function asBoolean(value) {
   if (["否", "false", "0", "no", ""].includes(normalized)) return false;
   throw new Error("旧复制格式的地址标志无效，未粘贴");
 }
+function clipboardMetadataRowsAligned(matrix) {
+  // 私有元数据行数必须与文本矩阵一致，否则编码/数量会整体错位到相邻行，宁可按纯文本匹配。
+  return ["giftIds", "giftQuantities"].every(key =>
+    !Array.isArray(matrix[key]) || matrix[key].length === matrix.length);
+}
 function pasteText(text, clipboardMatrix = null) {
   if (!initialized) return;
   finishEditing(); closeGiftPicker();
   let matrix = clipboardMatrix || parseTSV(text);
-  if (matrix[0]?.[0]?.trim() === "订单号" && ["礼品", "礼赠", "赠品"].includes(matrix[0]?.[1]?.trim())) { matrix.shift(); matrix.giftIds?.shift(); }
+  if (matrix[0]?.[0]?.trim() === "订单号" && ["礼品", "礼赠", "赠品"].includes(matrix[0]?.[1]?.trim())) {
+    // 表头不是数据行：matrix 与私有 giftIds/giftQuantities 必须一起移除，否则后续行数量整体错位。
+    matrix.shift();
+    if (Array.isArray(matrix.giftIds)) matrix.giftIds.shift();
+    if (Array.isArray(matrix.giftQuantities)) matrix.giftQuantities.shift();
+  }
   if (!matrix.length) return;
+  if (!clipboardMetadataRowsAligned(matrix)) { delete matrix.giftIds; delete matrix.giftQuantities; }
   const bounds = rangeBounds();
   const start = bounds?.top ?? (active ? Math.max(0, gridRows().findIndex(row => row.id === active.id)) : 0);
   const visible = columns();
@@ -1506,7 +1557,12 @@ function pasteText(text, clipboardMatrix = null) {
           const codes = matrix.giftIds?.[offset % matrix.length]?.[column % sourceWidth];
           const quantities = matrix.giftQuantities?.[offset % matrix.length]?.[column % sourceWidth];
           if (Array.isArray(codes) && codes.length) { ensureGiftScope(codes); assignGifts(updated[target], codes, [], quantities || {}); }
-          else { const match = matchGifts(value); assignGifts(updated[target], match.ids, match.unmatched, match.quantities); }
+          else {
+            const match = matchGifts(value);
+            // 超过 99 件的重复输入不能静默截断：提示并阻止本次粘贴的整体应用。
+            assertGiftQuantityLimit(match);
+            assignGifts(updated[target], match.ids, match.unmatched, match.quantities);
+          }
           if (updated[target].gift.length > fields.gift.max) throw new Error("礼品内容过长，请减少单行礼品数量");
         }
         else {
@@ -1609,7 +1665,7 @@ $("#formula-input").addEventListener("change", () => {
     if (value.length > fields[field].max) throw new Error("单元格内容过长");
     if (next === row[field]) return;
     remember();
-    if (field === "gift") { const match = matchGifts(value); assignGifts(row, match.ids, match.unmatched, match.quantities); }
+    if (field === "gift") { const match = matchGifts(value); assertGiftQuantityLimit(match); assignGifts(row, match.ids, match.unmatched, match.quantities); }
     else row[field] = next;
     changed(); render(); focusCell(row.id, field);
   } catch (error) { toast(error.message, true); activate(row.id, field); }
@@ -1645,7 +1701,7 @@ $("#start-registration").addEventListener("click", async () => {
     toast(result.workflow_configured ? `${result.reused ? "已有相同任务，沿用执行结果" : "登记任务已开始"}，共 ${result.count} 条。失败不会自动重试。`
       : `${result.reused ? "已有相同任务" : "已保存登记任务"}，共 ${result.count} 条。具体平台操作待接入。`);
   } catch (error) { toast(error.message, true); }
-  finally { starting = false; button.disabled = false; }
+  finally { starting = false; button.disabled = Boolean(queuePaused); }
 });
 document.addEventListener("keydown", event => {
   if (!initialized || event.isComposing) return;
@@ -1671,6 +1727,7 @@ async function refreshExecutionStates() {
       if (sequence !== pollSequence || epoch !== stateEpoch) return;
       document.getElementById("connection-notice").hidden = true;
       document.getElementById("shutdown-notice").hidden = !result.server_stopping;
+      renderPauseNotice(result.paused);
       if (epoch !== stateEpoch || hostManaging || starting || retrySubmitting) return;
       rowStates = result.row_states;
       if (Number.isInteger(result.draft_revision) && result.draft_revision > revision && !saving) {
@@ -1704,6 +1761,44 @@ async function refreshExecutionStates() {
 
 let retrySubmitting = false;
 let retryLoading = false, retryTimer = null, retryFailureIds = [];
+let queuePaused = null, resumeSubmitting = false;
+function renderPauseNotice(paused) {
+  queuePaused = paused && paused.paused === true ? paused : null;
+  const notice = document.getElementById("pause-notice");
+  if (!notice) return;
+  notice.hidden = !queuePaused;
+  const resume = document.getElementById("resume-queue");
+  if (!resume) return;
+  resume.hidden = !hostActionsAvailable;
+  if (!queuePaused) { document.getElementById("start-registration").disabled = Boolean(starting); return; }
+  const where = [queuePaused.site, queuePaused.stage].filter(Boolean).join(" / ");
+  const waiting = Number.isInteger(queuePaused.waiting_count) ? queuePaused.waiting_count : 0;
+  const reason = queuePaused.reason || "共享登录或浏览器环境暂不可用";
+  const condition = queuePaused.recovery_condition || "请在主机确认平台登录/验证码与浏览器窗口后恢复";
+  document.getElementById("pause-notice-text").textContent =
+    `原因：${reason}${where ? `（${where}）` : ""}。当前 ${waiting} 条未执行订单保留为“暂停待恢复”：未提交、不计入失败、不会自动重试或恢复。` +
+    `处理条件：${condition}。主机点击“主机恢复”后程序会先只读验证站点与页面就绪，再让未执行订单各执行一次；已失败或提交不确定的订单不会重放。` +
+    (hostActionsAvailable ? "" : "请在运行工具的主机上处理并恢复。");
+  document.getElementById("start-registration").disabled = true;
+}
+async function resumeQueue() {
+  if (!hostActionsAvailable || resumeSubmitting || !queuePaused) return;
+  resumeSubmitting = true;
+  const button = document.getElementById("resume-queue");
+  button.disabled = true; button.textContent = "正在只读验证站点…";
+  try {
+    const result = await api("/api/registrations/resume", { method: "POST", body: JSON.stringify({}) });
+    if (result.row_states) rowStates = result.row_states;
+    render();
+    toast(result.resumed ? `已恢复暂停队列，${result.waiting_count || 0} 条未执行订单重新排队；各执行一次，不重放失败订单。`
+      : "工作台当前没有暂停队列。");
+  } catch (error) { toast(error.message, true); }
+  finally {
+    resumeSubmitting = false; button.disabled = false; button.textContent = "主机恢复";
+    refreshExecutionStates();
+  }
+}
+document.getElementById("resume-queue")?.addEventListener("click", resumeQueue);
 function inGiftGroup(id, group) {
   const memberships = giftGroups.memberships[id] || [];
   return !group || (group === "__ungrouped" ? memberships.length === 0 : memberships.includes(group));
@@ -1877,11 +1972,11 @@ function openCancellation(identifiers) {
   if (!hostActionsAvailable || hostManaging) return;
   cancellationTargets = identifiers.flatMap(id => {
     const row = rows.find(row => row.id === id), state = rowStates[id];
-    return row && state?.state === "queued" && state.signature === rowSignature(row)
+    return row && (state?.state === "queued" || state?.state === "waiting") && state.signature === rowSignature(row)
       ? [{ row_id: id, task_id: state.task_id }] : [];
   });
-  if (!cancellationTargets.length) return toast("所选订单中没有内容未修改的排队任务。已开始处理的订单不能取消。", true);
-  $("#cancel-selection").textContent = `所选 ${identifiers.length} 行中，${cancellationTargets.length} 行正在等待执行。`;
+  if (!cancellationTargets.length) return toast("所选订单中没有内容未修改的等待执行或暂停未执行任务。已开始处理的订单不能取消。", true);
+  $("#cancel-selection").textContent = `所选 ${identifiers.length} 行中，${cancellationTargets.length} 行正在等待执行（含暂停待恢复，均未提交）。`;
   $("#cancel-dialog").showModal();
 }
 $("#cancel-queued").addEventListener("click", () => openCancellation(selectedRowIds()));

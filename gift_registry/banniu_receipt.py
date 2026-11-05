@@ -2,14 +2,19 @@
 
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from selenium.common.exceptions import WebDriverException
 
-from .workflow import PlatformOperationError, SubmissionReceipt
+from .workflow import (ManualInterventionRequired, PageRecoverableError, PlatformOperationError,
+                       SubmissionReceipt, request_quantities)
+
+# 班牛“创建时间”只到秒，页面服务器时钟与本机可能相差数秒。基线任务 ID 集合是识别旧任务
+# 的主要依据；创建时间只作为有界的二次保护，不允许任意放大窗口把旧任务当成本次提交。
+RECEIPT_CLOCK_TOLERANCE = timedelta(seconds=5)
 
 
-class TaskListNotReadyError(PlatformOperationError):
+class TaskListNotReadyError(PageRecoverableError):
     """只读筛选未取得完整新结果，可有界刷新列表；不适用于登记动作。"""
 
 
@@ -131,7 +136,6 @@ class ReceiptNumberNotReadyError(PlatformOperationError):
 
 def receipt_from_detail(snapshot, request, before, task_id, *, not_before=None):
     from .banniu_page import gifts_match, table_records
-    from .workflow import request_quantities
     if not snapshot:
         return None
     fields = snapshot["fields"]
@@ -146,8 +150,14 @@ def receipt_from_detail(snapshot, request, before, task_id, *, not_before=None):
         created = datetime.strptime(fields.get("创建时间", ""), "%Y-%m-%d %H:%M:%S")
     except ValueError:
         raise PlatformOperationError("班牛任务创建时间无法核对；禁止再次提交") from None
-    if not_before is not None and created < not_before.replace(microsecond=0):
-        raise PlatformOperationError("班牛回执属于本次提交前的旧任务；禁止再次提交")
+    if not_before is not None:
+        # 本单表单与任务都由本次调用创建；创建时间不得早于本次尝试开始时间太多。
+        # 容忍已记录在案的秒级截断/服务器时钟小幅偏差，超出即按旧任务拒绝。
+        earliest = (not_before - RECEIPT_CLOCK_TOLERANCE).replace(microsecond=0)
+        if created < earliest:
+            raise PlatformOperationError("班牛回执属于本次提交前的旧任务；禁止再次提交")
+        if created > datetime.now() + RECEIPT_CLOCK_TOLERANCE:
+            raise PlatformOperationError("班牛回执创建时间明显超前于本机时间，无法核对；禁止再次提交")
     state = fields.get("同步状态", "")
     if state in {"失败", "平台失败", "班牛失败"}:
         raise PlatformOperationError("班牛任务同步未成功，请人工核查；禁止再次提交")
@@ -220,9 +230,15 @@ class BanniuReceiptReader:
         self.driver.switch_to.default_content()
         recovered = False
         if self.page._visible(self.driver, '.w-edit-task-dialog'):
-            recovered = self.page._refresh_submitted_form() is True
+            try:
+                recovered = self.page._refresh_submitted_form() is True
+            except (PlatformOperationError, WebDriverException) as exc:
+                reason = str(exc) if isinstance(exc, PlatformOperationError) else type(exc).__name__
+                raise ManualInterventionRequired(
+                    f"班牛提交后遗留表单无法安全恢复（{reason}）；已暂停后续未执行任务，请人工处理该表单") from None
             if not recovered:
-                raise PlatformOperationError("班牛已有未关闭的任务表单，归属或人工操作状态无法安全确认，不能切换回执查询")
+                raise ManualInterventionRequired(
+                    "班牛已有未关闭的任务表单，归属或人工操作状态无法安全确认；已暂停后续未执行任务，请人工处理")
         if not recovered and refresh and self.driver.current_url == BANNIU_REGISTRATION_URL:
             from .browser import stabilize_banniu_viewport
             stabilize_banniu_viewport(self.driver)
@@ -291,8 +307,9 @@ class BanniuReceiptReader:
         return receipt_from_detail(snapshot, request, before, task_id, not_before=not_before)
 
     def check_distinct_gifts(self, request, rows):
-        """重登前逐项只读核对旧任务编码；同组合或不完整详情均不能重登。"""
+        """重登前逐项只读核对旧任务编码和数量；同组合或不完整详情均不能重登。"""
         from .banniu_page import table_records
+        expected = dict(zip(request.gift_ids, request_quantities(request)))
         identifiers = {row['task_id'] for row in rows}
         for index, row in enumerate(rows):
             if index:
@@ -308,8 +325,19 @@ class BanniuReceiptReader:
             codes = [record['商家编码'] for record in records]
             if not codes or any(not code for code in codes) or len(set(codes)) != len(codes):
                 raise PlatformOperationError("班牛旧任务礼品编码不完整，停止重登")
-            if set(codes) == set(request.gift_ids):
-                raise PlatformOperationError("班牛已有该订单及礼品组合的登记任务，停止重登，请人工核查")
+            if set(codes) != set(expected):
+                continue
+            # 明确规则：同编码且同数量视为同组合（停止重登）；同编码不同数量也无法证明
+            # 本次补发意图未被覆盖，同样停止并要求人工核查，不能为放行而降低旧任务保护。
+            try:
+                old_quantities = {}
+                for record in records:
+                    old_quantities[record['商家编码']] = int(record['数量'])
+            except (KeyError, TypeError, ValueError):
+                raise PlatformOperationError("班牛旧任务礼品数量无法核对，停止重登，请人工核查") from None
+            if old_quantities == expected:
+                raise PlatformOperationError("班牛已有该订单及礼品组合（同数量）的登记任务，停止重登，请人工核查")
+            raise PlatformOperationError("班牛已有该订单同编码但不同数量的登记任务，停止重登，请人工核查")
         return True
 
     def wait_for_receipt(self, request, before, previous_ids, submitted_at, *, queries=24, interval=5):

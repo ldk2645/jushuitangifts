@@ -87,11 +87,24 @@ class ReceiptDetailTests(unittest.TestCase):
             receipt_from_detail(snapshot, REQUEST, BEFORE, TASK)
 
     def test_old_or_unparseable_creation_time_cannot_confirm_current_submission(self):
-        for value in ("2026-10-23 09:59:59", "", "未知时间"):
+        for value in ("2026-10-23 09:59:50", "", "未知时间"):
             snapshot = detail()
             snapshot["fields"]["创建时间"] = value
             with self.subTest(value=value), self.assertRaises(PlatformOperationError):
                 receipt_from_detail(snapshot, REQUEST, BEFORE, TASK, not_before=SUBMITTED_AT)
+
+    def test_clock_tolerance_bounds_truncation_and_small_server_skew(self):
+        # 秒级截断：创建时间 = 提交开始时间向下取整，允许。
+        self.assertTrue(receipt_from_detail(detail(), REQUEST, BEFORE, TASK, not_before=SUBMITTED_AT).accepted)
+        # 服务器创建时间比本机尝试开始慢 2 秒（本轮真实复现场景）在受限容差内接受。
+        snapshot = detail()
+        snapshot["fields"]["创建时间"] = "2026-10-23 09:59:58"
+        self.assertTrue(receipt_from_detail(snapshot, REQUEST, BEFORE, TASK, not_before=SUBMITTED_AT).accepted)
+        # 超出已记录的受限容差（>5 秒）仍必须按旧任务拒绝；不能任意放大窗口。
+        snapshot = detail()
+        snapshot["fields"]["创建时间"] = "2026-10-23 09:59:54"
+        with self.assertRaisesRegex(PlatformOperationError, "旧任务"):
+            receipt_from_detail(snapshot, REQUEST, BEFORE, TASK, not_before=SUBMITTED_AT)
 
     def test_blank_sync_or_jst_id_is_pending_but_failure_or_old_jst_id_is_rejected(self):
         self.assertIsNone(receipt_from_detail(None, REQUEST, BEFORE, TASK))

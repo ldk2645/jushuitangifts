@@ -45,6 +45,8 @@ build/
 !/docs/portable-settings.md
 !/docs/catalog-name-review-*.md
 !/docs/releases/
+!/docs/honor-stability-fix-report.md
+!/docs/honor-user-guide.md
 !/docs/catalog-harness.md
 !/docs/catalog-harness-policy.json
 !/docs/deepseek-catalog-prompt.md

@@ -73,14 +73,16 @@ def plan_txt_import(tool, paths, *, offline=False):
             observed, issues = tool._verified_names(code, evidence_ids, PLATFORMS)
             unique = {key for values in observed.values() for key in values}
             if issues or set(observed) != set(PLATFORMS) or len(unique) != 1:
-                item = {'code': code, 'reason': '班牛未取得该编码第一行商品名称',
+                detail = '；'.join(dict.fromkeys(issue for issue in issues if issue))
+                reason = '班牛未取得该编码第一行商品名称' + (f'（{detail}）' if detail else '')
+                item = {'code': code, 'reason': reason,
                         'observed': {platform: sorted({raw_name for raw_names in values.values()
                                                        for raw_name in raw_names})
                                      for platform, values in observed.items()}}
                 if code in old:
                     name_pending.append(item)  # 已有编码只更新分组，保留原名等待人工核实。
                 else:
-                    pending.append({**item, 'reason': item['reason'] + '；新编码无名称不新增'})
+                    pending.append({**item, 'reason': reason + '；新编码无名称不新增'})
                 continue
             names[code] = _display_name(old.get(code), observed, unique.pop())
     summary = {'sources': sources, 'code_count': len(codes), 'catalog_count_before': len(catalog),

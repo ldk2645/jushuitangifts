@@ -11,6 +11,20 @@ from gift_registry.catalog_import import plan_txt_import, apply_txt_plan
 from gift_registry.catalog_maintenance import BoundCatalog, encoded
 
 
+def _print_grouped(entries, label):
+    """按原因合并显示，避免 191 个编码逐行刷屏；报告里仍有逐项明细。"""
+    if not entries:
+        return
+    groups = {}
+    for entry in entries:
+        reason = (entry.get('reason') or '').strip() or '名称未核实'
+        groups.setdefault(reason, []).append(str(entry.get('code', '')))
+    for reason, codes in groups.items():
+        shown = '、'.join(codes[:8]) + (' 等' if len(codes) > 8 else '')
+        print('%s（%d 项）：%s' % (label, len(codes), reason))
+        print('  涉及编码：' + shown)
+
+
 def _print_summary(result):
     print('编码 %d 个；目录现有 %d 项。' % (result.get('code_count', 0),
                                           result.get('catalog_count_before', 0)))
@@ -27,10 +41,8 @@ def _print_summary(result):
                                             '、'.join(entry.get('groups_after') or []) or '无'))
         if parts:
             print('更新 %s：%s' % (entry['code'], '；'.join(parts)))
-    for entry in result.get('name_pending') or []:
-        print('名称待核实（保留原名，仅更新分组）：%s' % entry['code'])
-    for entry in result.get('pending') or []:
-        print('阻止应用：%s（%s）' % (entry['code'], entry.get('reason', '')))
+    _print_grouped(result.get('name_pending'), '名称待核实（保留原名，仅更新分组）')
+    _print_grouped(result.get('pending'), '阻止应用')
     if not result.get('diff') and not result.get('added_codes'):
         print('配置已是最新，无需写入。')
 
@@ -52,6 +64,8 @@ def main(argv=None):
     parser.add_argument('--interactive', action='store_true', help='预览差异后，主机输入 Y 才写入')
     parser.add_argument('--offline', action='store_true', help='仅为已有编码添加分组，不刷新名称、不新增礼品')
     parser.add_argument('--headless', action='store_true', help='隐藏查询浏览器；验证码需使用 login.bat 处理')
+    parser.add_argument('--login-wait', type=int, default=300, metavar='SECONDS',
+                        help='班牛未登录时等待人工登录的秒数，0 表示不等待（默认 300，仅可见浏览器）')
     args = parser.parse_args(argv)
     if args.apply and args.interactive:
         parser.error('--apply 与 --interactive 不能同时使用')
@@ -60,6 +74,7 @@ def main(argv=None):
         from gift_registry.product_reader import SeleniumProductReader
         # 按主机要求只核对班牛平台：以每个编码商品列表第一行的商品名称作为目录名称。
         reader = SeleniumProductReader(headless=args.headless, platforms=('banniu',),
+            login_wait_seconds=0 if args.headless else args.login_wait,
             progress=lambda message: print(message, file=sys.stderr, flush=True))
     tool = BoundCatalog(ROOT, reader=reader)
     paths = args.files or sorted((ROOT / 'config').glob('gifts-*.txt'))
@@ -71,7 +86,7 @@ def main(argv=None):
         _print_summary(result)
         print('报告：' + str(report_path))
         if not result['applicable']:
-            print('存在新编码未完成两平台核实，未写入任何配置；请查看报告 pending。', file=sys.stderr)
+            print('存在新编码未取得班牛商品名称，未写入任何配置；请查看报告 pending。', file=sys.stderr)
             return 2
         if args.apply:
             _apply(tool, result, report_path)

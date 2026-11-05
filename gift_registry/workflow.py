@@ -10,6 +10,27 @@ class PlatformOperationError(RuntimeError):
     """可直接展示的固定业务错误；禁止传入页面原文、凭据或 Selenium 异常原文。"""
 
 
+class ManualInterventionRequired(PlatformOperationError):
+    """共享浏览器/认证/未知表单状态需要人工介入；后续未执行任务应暂停等待主机恢复。
+
+    pause_class 供队列做结构化分类，业务代码不得解析中文 detail 文本决定分支。
+    """
+    pause_class = 'manual'
+    site = 'banniu'
+
+    def recovery_hint(self):
+        return '请在主机确认平台登录或验证码、浏览器窗口和遗留表单，处理后在主机恢复暂停队列'
+
+
+class PageRecoverableError(PlatformOperationError):
+    """可证明属于本工具且可安全恢复的页面状态；订单间边界可做一次有界恢复。"""
+    pause_class = 'recoverable'
+    site = 'banniu'
+
+    def recovery_hint(self):
+        return '可在订单间安全关闭本工具页面并重开浏览器，随后重新查询下一独立订单'
+
+
 class RegistrationNotSubmittedError(PlatformOperationError):
     """适配器确认尚未进入提交按钮动作；仍保留已派发标记，禁止重试。"""
 
@@ -247,8 +268,38 @@ class Workflow:
             label = {"querying": "聚水潭首次查询失败，未进行班牛登记", "submitting": "班牛提交异常，结果可能不确定，请人工核查",
                      "checking_retry": "失败订单重登安全核查未通过，未进行班牛登记",
                      "verifying": "聚水潭复查失败，未能确认新增信息"}[stage]
-            if stage == 'submitting' and isinstance(exc, RegistrationNotSubmittedError):
+            clicked = getattr(exc, 'click_attempted', None)
+            if stage == 'submitting' and clicked is False:
+                label = '班牛登记未提交'
+                submission_status = "not_submitted"
+            elif stage == 'submitting' and clicked is True:
+                submission_status = "uncertain"
+            elif stage == 'submitting' and isinstance(exc, RegistrationNotSubmittedError):
                 label = '班牛登记未提交'
                 submission_status = "not_submitted"
             reason = str(exc) if isinstance(exc, PlatformOperationError) else type(exc).__name__
-            report("failed", detail=f"{label}（{reason}）；不会自动重试登记", submission_status=submission_status)
+            pause = _pause_classification(exc, stage)
+            detail = f"{label}（{reason}）；不会自动重试登记"
+            if pause:
+                detail += f"；已暂停后续未执行任务，等待主机恢复（{pause['recovery_condition']}）"
+            report("failed", detail=detail, submission_status=submission_status, pause=pause)
+
+
+def _pause_classification(exc, stage):
+    """把共享环境故障映射为结构化暂停信息；普通业务失败返回 None。
+
+    优先使用异常实例上的结构化分类属性（适配器可保留原始异常类型/阶段/提交边界），
+    其次按异常基类判断；队列只消费该结构化字段，不解析中文 detail 文本。
+    """
+    pause_class = getattr(exc, 'pause_class', None)
+    if pause_class in {'manual', 'recoverable'}:
+        return {'class': pause_class, 'site': getattr(exc, 'site', 'banniu'), 'stage': stage,
+                'recovery_condition': getattr(exc, 'recovery_condition', None)
+                or '请在主机确认平台登录/浏览器状态，处理后在主机恢复暂停队列'}
+    if isinstance(exc, ManualInterventionRequired):
+        return {'class': 'manual', 'site': getattr(exc, 'site', 'banniu'), 'stage': stage,
+                'recovery_condition': exc.recovery_hint()}
+    if isinstance(exc, PageRecoverableError):
+        return {'class': 'recoverable', 'site': getattr(exc, 'site', 'banniu'), 'stage': stage,
+                'recovery_condition': exc.recovery_hint()}
+    return None

@@ -234,6 +234,43 @@ class BanniuPageTests(unittest.TestCase):
         reader.wait_for_receipt.return_value = SubmissionReceipt(True, created_record_ids=("0002",))
         return page, button, reader
 
+    def test_click_readiness_failure_before_native_click_is_not_submitted(self):
+        from gift_registry.workflow import RegistrationNotSubmittedError
+        page, button, reader = self.submission_page()
+        page._click_once = Mock(side_effect=PlatformOperationError("班牛目标控件仍被遮罩覆盖，未点击"))
+        page._discard_unsubmitted_form = Mock(return_value='closed')
+        with patch('gift_registry.banniu_receipt.BanniuReceiptReader', return_value=reader):
+            with self.assertRaises(RegistrationNotSubmittedError) as error:
+                page.submit(RegistrationRequest('0009', (SKU,), (NAME,)), OrderSnapshot('0009', True))
+        self.assertIn('未触发提交按钮', str(error.exception))
+        self.assertIn('已关闭本次未提交表单', str(error.exception))
+        self.assertFalse(getattr(error.exception, 'click_attempted'))
+        self.assertEqual(error.exception.stage, '提交前可点击性检查')
+        button.click.assert_not_called()
+
+    def test_native_click_exception_is_uncertain_and_token_is_recorded_before_click(self):
+        from gift_registry.workflow import ManualInterventionRequired
+        page, button, reader = self.submission_page()
+        request = RegistrationRequest('0009', (SKU,), (NAME,))
+        page._owned_form = (Mock(), request, 'owned-token')
+        page._discard_unsubmitted_form = Mock(return_value='closed')
+
+        def click(element, *, before_click=None, resolve=None):
+            before_click()
+            raise NoSuchWindowException('private browser payload')
+
+        page._click_once = Mock(side_effect=click)
+        with patch('gift_registry.banniu_receipt.BanniuReceiptReader', return_value=reader):
+            with self.assertRaises(ManualInterventionRequired) as error:
+                page.submit(request, OrderSnapshot('0009', True))
+        self.assertIn('结果可能不确定', str(error.exception))
+        self.assertNotIn('private browser payload', str(error.exception))
+        self.assertTrue(getattr(error.exception, 'click_attempted'))
+        self.assertEqual(error.exception.stage, '点击提交或读取回执')
+        self.assertEqual(page._submitted_form_token, 'owned-token')
+        page._discard_unsubmitted_form.assert_not_called()  # 原生 click 已发起，不能清理成“未提交”。
+        button.click.assert_not_called()
+
     def test_secondary_auth_failure_preserves_proven_pre_submit_failure(self):
         from gift_registry.authentication import AuthenticationRequired
         from gift_registry.workflow import RegistrationNotSubmittedError

@@ -51,7 +51,7 @@
 
 reader 返回 `platform / queried_code / observed_at / source_url / status / matches[{code,name}] / reason`，班牛观察另含 `total`。名称比对忽略空白与全半角差异（NFKC 后去掉空白）。`plan()` 支持 `platforms` 字段（默认两平台；update-gifts 传 `["banniu"]`）：要求平台均存在精确结果且名称归一化一致才允许新增或更名；无法核实时已有编码保留原名、仅更新分组，新编码阻止整批。认证失败或页面不完整时返回 blocked，不猜测名称。
 
-`update-gifts.bat` / `tools/update_gifts.py` 是主机侧便捷入口：读取 `config/gifts-*.txt`，只按班牛第一行名称更新，预览差异并要求输入 Y 后才写入；`tools/catalog_harness.py --live` 是 JSON 协议入口。两者都不导入登记队列、订单查询或提交编排。测试中的 `SyntheticReader` 只在测试模块显式注入；CLI 不暴露任意代码执行。合成夹具与离线测试不等于真实平台查询已经验证。
+`update-gifts.bat` / `tools/update_gifts.py` 是主机侧便捷入口：读取 `config/gifts-*.txt`，只按班牛第一行名称更新，预览差异并要求输入 Y 后才写入。班牛未登录或会话过期时保留可见浏览器并等待人工登录（默认 300 秒，`--login-wait` 可调；`--headless` 不等待），登录成功后保存加密会话并继续查询。`tools/catalog_harness.py --live` 是 JSON 协议入口。两者都不导入登记队列、订单查询或提交编排。测试中的 `SyntheticReader` 只在测试模块显式注入；CLI 不暴露任意代码执行。合成夹具与离线测试不等于真实平台查询已经验证。
 
 ## 实际离线示例
 

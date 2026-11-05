@@ -21,6 +21,10 @@
     <aside id="shutdown-notice" class="network-notice" role="status" hidden>
       <div><strong>工作台正在关闭</strong><p>当前可查看进度，主机仍可取消排队。暂停保存和新登记，剩余任务完成后自动退出；未保存的编辑请先复制保留。</p></div>
     </aside>
+    <aside id="pause-notice" class="network-notice pause-notice" role="alert" hidden>
+      <div><strong>登记已暂停，后续未执行订单未提交</strong><p id="pause-notice-text"></p></div>
+      <div class="network-notice-actions"><button id="resume-queue" class="button" type="button">主机恢复</button></div>
+    </aside>
     <aside id="network-notice" class="network-notice" role="alert" hidden>
       <div><strong>局域网连接提醒</strong><p id="network-notice-text"></p></div>
       <div class="network-notice-actions"><a class="button" href="https://dash.cloudflare.com/" target="_blank" rel="noopener noreferrer">打开 Cloudflare</a><button id="network-ack" class="button" type="button">已核对</button><button id="network-dismiss" class="button" type="button" title="隐藏本次提醒；新的网络变化仍会提醒">删除提醒</button></div>
@@ -36,8 +40,8 @@
           <button id="delete-row" class="button" type="button" disabled><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M8 3h4l1 3m-7 0 1 11h6l1-11M9 9v5m3-5v5"/></svg>删除行</button>
           <span class="toolbar-divider"></span>
           <button id="undo" class="icon-button" type="button" title="撤销（Ctrl+Z）" aria-label="撤销" disabled><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 5 3 9l4 4M3 9h9a5 5 0 0 1 0 10"/></svg></button>
-          <button id="copy-range" class="button" type="button" title="复制选中区域（Ctrl+C）"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 7h10v10H7zM13 7V3H3v10h4"/></svg>复制区域</button>
-          <button id="paste" class="button" type="button" title="从选区左上角粘贴（Ctrl+V）"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 4H4v13h12V4h-3M7 3h6v4H7zM7 11h6m-6 3h4"/></svg>粘贴区域</button>
+          <button id="copy-range" class="button" type="button" title="复制选中区域（Ctrl+C）；同一礼品多件仅在本工作台内粘贴时完整保留数量，粘贴到 Excel/纯文本会按每种 1 件"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 7h10v10H7zM13 7V3H3v10h4"/></svg>复制区域</button>
+          <button id="paste" class="button" type="button" title="从选区左上角粘贴（Ctrl+V）；结构化复制会完整保留同一礼品数量，Excel 纯文本不含数量信息，粘贴按每种 1 件"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 4H4v13h12V4h-3M7 3h6v4H7zM7 11h6m-6 3h4"/></svg>粘贴区域</button>
           <button id="add-gift" class="button" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 8h14v4H3zM5 12v5h10v-5M10 8v9M10 8C3 8 6 1 10 8Zm0 0c7 0 4-7 0 0Z"/></svg>新增礼赠</button>
           <button id="auto-fit-columns" class="button" type="button" title="按内容适配全部列，并清除手动列宽"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 3v14M17 3v14M4 10h12M7 7l-3 3 3 3m6-6 3 3-3 3"/></svg>自动列宽</button>
           <label class="toolbar-gift-scope" for="toolbar-gift-group">礼品分组 <select id="toolbar-gift-group" aria-label="本设备礼品分组"></select></label>
@@ -73,7 +77,7 @@
         <table id="registry-grid" role="grid" aria-multiselectable="true" aria-label="礼赠登记数据，可拖选区域并复制粘贴" aria-describedby="grid-help"><colgroup id="grid-columns"></colgroup><thead id="grid-head"></thead><tbody id="grid-body"></tbody></table>
         <div id="load-error" class="load-error" hidden><strong>表格暂时无法载入</strong><p>请确认工作台已启动，然后刷新页面重试。</p><button id="reload" class="button" type="button">重新载入</button></div>
       </div>
-      <div class="sheet-bottom"><button id="add-bottom" class="add-bottom" type="button"><span>＋</span> 添加一行</button><span id="grid-help">右下角拖动填充 / Ctrl+D 向下填充 · Ctrl+C 复制 · Ctrl+V 粘贴 · Ctrl+Z 撤销 · 双击 / F2 编辑</span></div>
+      <div class="sheet-bottom"><button id="add-bottom" class="add-bottom" type="button"><span>＋</span> 添加一行</button><span id="grid-help">右下角拖动填充 / Ctrl+D 向下填充 · Ctrl+C 复制 · Ctrl+V 粘贴 · Ctrl+Z 撤销 · 双击 / F2 编辑 · 同一礼品多件仅在工作台内复制/粘贴时保留数量（Excel 纯文本按 1 件）</span></div>
     </section>
     <footer class="workspace-footer"><div class="sheet-tab"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 3h14v14H3zM3 8h14M8 3v14"/></svg>礼赠登记</div><div class="sheet-summary"><span id="row-summary">共 0 行</span><span class="summary-divider"></span><span id="ready-summary">待登记 0 条</span><span id="selection-summary" class="selection-summary">未选中单元格</span></div></footer>
   </main>

@@ -10,14 +10,53 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 
-from .authentication import ENTRY_URLS
+from .authentication import ENTRY_URLS, AuthenticationRequired
 from .banniu_page import BanniuPage, _open_registration_list, _REGISTRATION_LIST_READY
 from .browser import SiteBrowser, create_driver
 from .catalog_maintenance import normalize_name, timestamp
 from .config import DATA_DIR, SITES
 from .driver_shutdown import quit_owned_driver
 from .sessions import SessionStore
-from .workflow import PlatformOperationError
+from .workflow import ManualInterventionRequired, PlatformOperationError
+
+
+class ProductQueryBlocked(ManualInterventionRequired):
+    """查询窗口出现无法证明归属的内容：停止自动查询并保留窗口交人工处理。"""
+
+
+_QUERY_OWNER_STATE = """
+// gift-product-query-owner: read-only ownership/progress snapshot.
+const root=arguments[0], token=arguments[1];
+const state=root && root.isConnected ? root.__giftRegistrationOwner : null;
+const dialog=arguments[2];
+const order=document.querySelector('#col_27724 textarea');
+const giftRows=document.querySelectorAll('#col_27748 .children-box-body > .el-table .el-table__body-wrapper > table > tbody > tr');
+return {rootConnected: !!(root && root.isConnected),
+        sameRoot: root===dialog,
+        tokenMatch: !!state && state.token===token,
+        submitSeen: !!state && state.submitSeen===true,
+        manualEdited: !!state && state.manualEdited===true,
+        automation: state ? state.automation : null,
+        order: order ? (order.value || '').trim() : null,
+        giftCount: giftRows.length};
+"""
+
+
+def query_form_state_problem(state):
+    """判断查询表单是否仍可安全视为本工具的空白未提交页面；返回中文原因。"""
+    if not isinstance(state, dict) or not state.get("rootConnected") or not state.get("sameRoot"):
+        return "班牛查询表单已被替换或关闭，无法证明归属"
+    if not state.get("tokenMatch") or state.get("automation") is None:
+        return "班牛查询表单归属标记缺失或被外部替换"
+    if state.get("manualEdited"):
+        return "检测到人工修改操作，已停止自动查询并保留当前窗口供人工处理"
+    if state.get("submitSeen"):
+        return "检测到提交类点击，已停止自动查询并保留当前窗口供人工核对"
+    if state.get("order"):
+        return "班牛查询表单已有订单号，已停止自动查询，不会刷新覆盖人工内容"
+    if state.get("giftCount"):
+        return "班牛查询表单已有商品明细，已停止自动查询，不会刷新覆盖人工内容"
+    return None
 
 # 来源：聚水潭主导航“商品”→“商品及库存管理(普通商品资料)”的 iframe src。
 JUSHUITAN_PRODUCTS_URL = ('https://dailisrc.jushuitan.com/erp-web-group/erp-scm-goods/'
@@ -140,27 +179,62 @@ class BanniuProductPage:
                         '班牛登记列表尚未就绪')
         self.page._click_once(self.page._one('button.edit-task-button-btn', text='新建'))
         self.root = self.page._dialog()
+        self._track_query_form()
         self._blank()
 
+    def _track_query_form(self):
+        # 复用 BanniuPage 的归属跟踪：记录人工输入/提交点击，自动填写通过 _form_action 计数。
+        self._marker = object()
+        self.page._track_form(self.root, self._marker)
+        self.token = self.page._owned_form[2]
+
+    def _owner_state(self):
+        return self.driver.execute_script(_QUERY_OWNER_STATE, self.root, self.token,
+                                          self.page._dialog())
+
+    def _ensure_ownership(self):
+        problem = query_form_state_problem(self._owner_state())
+        if problem:
+            raise ProductQueryBlocked(problem + "；查询已停止，窗口保留供人工处理")
+
     def _blank(self):
-        if (self.page._dialog() != self.root or self.page._value('#col_27724 textarea').strip()
-                or self.page._selected_gifts()):
-            raise PlatformOperationError('商品查询仅允许本工具的空白未提交表单')
+        problem = query_form_state_problem(self._owner_state())
+        if problem:
+            raise ProductQueryBlocked(problem + "；查询已停止，窗口保留供人工处理")
         self.page._validate_honor_context()
         try:
-            self.page._close_search()  # 读完后关闭结果面板，避免残留面板或遮罩影响下一编码。
+            with self.page._form_action():
+                self.page._close_search()  # 读完后关闭结果面板，避免残留面板或遮罩影响下一编码。
         except PlatformOperationError:
             pass  # 关闭失败交给下一编码或恢复流程处理，不能据此认定为已填写表单。
 
     def recover(self):
-        """只读查询卡住时刷新一次空白表单；不提交、不改业务数据。"""
+        """只读查询卡住时恢复空白查询页；先核对人工内容，绝不在未知表单上刷新。"""
         self.driver.switch_to.default_content()
+        dialog = self.page._dialog() if self._dialog_visible() else None
+        if dialog is not None:
+            problem = query_form_state_problem(self._owner_state())
+            if problem:
+                raise ProductQueryBlocked(problem + "；未刷新、未关闭该窗口，请人工处理后再运行")
+            # 本工具自己的空白表单：安全关闭，再重新打开空白查询页。
+            close = self.page._one('.w-dialog-title > .w-dialog-close', root=self.root)
+            self.page._click_once(close)
+            self.page._wait(lambda _: not self.driver.execute_script(
+                "return !!document.querySelector('.w-edit-task-dialog')"),
+                '班牛商品查询表单未关闭，已停止自动恢复')
         _open_registration_list(self.driver)
         self.page._wait(lambda _: self.driver.execute_script(_REGISTRATION_LIST_READY) is True,
                         '班牛商品查询恢复时登记列表尚未就绪')
         self.page._click_once(self.page._one('button.edit-task-button-btn', text='新建'))
         self.root = self.page._dialog()
+        self._track_query_form()
         self._blank()
+
+    def _dialog_visible(self):
+        try:
+            return bool(self.driver.find_elements(By.CSS_SELECTOR, '.w-edit-task-dialog'))
+        except WebDriverException:
+            return False
 
     def _read(self):
         panel = self.page._one('#col_27748 .child-search-search-task', root=self.root)
@@ -183,6 +257,7 @@ class BanniuProductPage:
         if self.page._value('#col_27748 .child-search-search-select input') != '商家编码':
             raise PlatformOperationError('班牛搜索字段不是商家编码')
         self.page._set_text('#col_27748 .child-search-search-condition input', code)
+        self._ensure_ownership()
         self.page._click_once(self.page._one('#col_27748 .child-search-search-condition button',
                                             root=self.root, text='筛选'))
         result = {}
@@ -208,6 +283,7 @@ class BanniuProductPage:
 
         self.page._wait(ready, '班牛商品列表未完整加载或未刷新，保留原配置', timeout=45)
         self.previous = result['rows']
+        self._ensure_ownership()
         self._blank()
         return observation('banniu', code, result['rows'], ENTRY_URLS['banniu'],
                            total=result['total'])
@@ -252,14 +328,53 @@ class JushuitanProductPage:
 
 
 class SeleniumProductReader:
-    def __init__(self, *, headless=False, progress=None, platforms=('banniu', 'jushuitan')):
+    def __init__(self, *, headless=False, progress=None, platforms=('banniu', 'jushuitan'),
+                 login_wait_seconds=0):
         if (not isinstance(platforms, (tuple, list)) or not platforms
                 or any(platform not in ('banniu', 'jushuitan') for platform in platforms)
                 or len(set(platforms)) != len(platforms)):
             raise ValueError('商品查询平台配置无效')
+        if type(login_wait_seconds) is not int or not 0 <= login_wait_seconds <= 600:
+            raise ValueError('人工登录等待秒数必须在 0 到 600 之间')
         self.headless = headless
         self.progress = progress or (lambda message: None)
         self.platforms = tuple(platforms)
+        self.login_wait_seconds = login_wait_seconds
+
+    def _save_session(self, site, browser):
+        """人工登录成功后刷新加密会话快照，供后续查询/登录助手复用。"""
+        try:
+            browser.capture(deadline=time.monotonic() + 10)
+            if browser.snapshot:
+                SessionStore(DATA_DIR / 'sessions').save(site.key, browser.snapshot)
+        except Exception:
+            self.progress(f'{site.name}：会话快照保存未完成，不影响本次只读查询')
+
+    def _authenticate(self, site, browser):
+        try:
+            browser.ensure_authenticated()
+            return
+        except AuthenticationRequired as exc:
+            first_error = exc
+        if self.headless or self.login_wait_seconds <= 0:
+            raise first_error
+        self.progress(f'{site.name}：{first_error}')
+        self.progress(f'{site.name}：请在已打开的浏览器窗口完成登录（含验证码），'
+                      f'程序最多等待 {self.login_wait_seconds} 秒；完成后自动继续查询')
+        deadline = time.monotonic() + self.login_wait_seconds
+        last_error = str(first_error)
+        while time.monotonic() < deadline:
+            time.sleep(2)
+            try:
+                browser.ensure_authenticated()
+            except AuthenticationRequired as pending:
+                last_error = str(pending)
+                continue
+            if browser.authenticator is None or browser.authenticator.is_authenticated(browser.driver):
+                self.progress(f'{site.name}：人工登录已确认，保存会话并继续商品查询')
+                self._save_session(site, browser)
+                return
+        raise AuthenticationRequired(last_error + '；等待人工登录超时')
 
     def query(self, codes, profile_directory):
         run = Path(profile_directory) / uuid.uuid4().hex
@@ -270,6 +385,7 @@ class SeleniumProductReader:
                 continue
             browser = SiteBrowser(site, SessionStore(run / 'sessions'))
             completed = set()
+            blocked_manual = None
             try:
                 self.progress(site.name + '：打开独立只读商品查询')
                 browser.driver = create_driver(site, headless=self.headless, profile=run / site.key)
@@ -277,7 +393,7 @@ class SeleniumProductReader:
                 if snapshot:
                     browser.restore(snapshot)
                 browser.navigate(ENTRY_URLS[site.key])
-                browser.ensure_authenticated()
+                self._authenticate(site, browser)
                 page = (BanniuProductPage(browser.driver) if site.key == 'banniu'
                         else JushuitanProductPage(browser.driver))
                 failures = 0
@@ -286,6 +402,11 @@ class SeleniumProductReader:
                     try:
                         result.append(page.query(code))
                         failures = 0
+                    except ProductQueryBlocked as exc:
+                        blocked_manual = str(exc)
+                        failures = 0
+                        result.append({'platform': site.key, 'queried_code': code, 'observed_at': timestamp(),
+                                       'status': 'blocked', 'matches': [], 'reason': blocked_manual})
                     except PlatformOperationError as exc:
                         # 单个编码的只读查询失败不能中断同平台其它编码的核实；先尝试
                         # 恢复空白查询页（刷新表单，不提交），成功则继续下一编码。
@@ -297,12 +418,25 @@ class SeleniumProductReader:
                             try:
                                 recover()
                                 recovered = True
+                            except ProductQueryBlocked as block:
+                                blocked_manual = str(block)
                             except (PlatformOperationError, WebDriverException):
                                 recovered = False
                         failures = 0 if recovered else failures + 1
                         if failures >= 2:
                             raise PlatformOperationError(f'{site.name}商品查询连续失败，停止本平台查询') from None
                     completed.add(code)
+                    if blocked_manual:
+                        # 人工内容/提交操作出现：立即停止本平台查询，保留窗口供人工处理；
+                        # 后续编码记为 blocked，绝不刷新覆盖或继续输入。
+                        for remaining in codes[index:]:
+                            if remaining not in completed:
+                                result.append({'platform': site.key, 'queried_code': remaining,
+                                               'observed_at': timestamp(), 'status': 'blocked',
+                                               'matches': [], 'reason': blocked_manual})
+                                completed.add(remaining)
+                        self.progress(f'{site.name}：检测到人工内容，已停止自动查询并保留窗口，请人工处理')
+                        break
             except (PlatformOperationError, WebDriverException, OSError, ValueError) as exc:
                 reason = str(exc) if isinstance(exc, PlatformOperationError) else '浏览器、登录快照或商品页面不可用，请运行登录助手后重试'
                 for code in codes:
@@ -310,6 +444,9 @@ class SeleniumProductReader:
                         result.append({'platform': site.key, 'queried_code': code, 'observed_at': timestamp(),
                                        'status': 'blocked', 'matches': [], 'reason': reason})
             finally:
-                if browser.driver is not None:
+                if blocked_manual:
+                    # 保留窗口与内容供人工处理；不刷新、不关闭、不写回目录。
+                    self.progress(f'{site.name}：窗口已保留，请在处理人工内容后关闭该独立查询浏览器')
+                elif browser.driver is not None:
                     quit_owned_driver(browser.driver)
         return result
