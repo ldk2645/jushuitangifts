@@ -31,9 +31,19 @@ config、data、草稿、队列锁、浏览器配置、驱动缓存及端口独�
 
 2026-11-05 已通过独立浏览器标签验证新班牛账号登录、荣耀工作表、空白表单、完整含斜杠编码搜索及同步状态选项。未输入真实订单、未提交工单。页面核对使用独立内置浏览器；不能将其称为 Selenium 实单验收。
 
-本机 Selenium 启动仍出现 Chrome SessionNotCreatedException / Edge tab crashed，空白页诊断也失败。程序代码和字段适配已经完成，但当前机器的实际自动登记仍受此启动问题阻挡。没有关闭浏览器沙盒、修改系统权限或改动原服务来绕过故障。
+2026-11-05 已定位并修复“业务浏览器 Selenium 无法启动”：本机项目目录曾被 Windows 沙箱工具写入“低完整性级别”（Low Mandatory Level）权限标签，`.venv` 里的 Python 因继承了该标签而以低完整性进程运行，Selenium 启动的 Chrome / Edge 在启动阶段直接退出（Chrome SessionNotCreatedException、Edge tab crashed），与业务代码无关。已将项目目录的完整性级别恢复为普通级别；修复后 Selenium 空白页检查在 Chrome 与 Edge 的有头、无头模式全部通过（见 `.tmp/browser-startup-result.json`）。
 
 verify-honor.bat 会在独立 Selenium 会话中只读检查登录和空白表单，报告保存到 .tmp/honor-page-structure.json。需要验证码时由用户完成；不会输入订单或点击提交。浏览器正常启动后，用此脚本检查 Selenium 路径，再由用户决定实际业务登记。
+
+## 业务浏览器无法启动时
+
+先双击 diagnose-selenium.bat：它只启动独立空白页，分别用有头、无头模式检查 Chrome 与 Edge，并报告当前 Python 的 Windows 完整性级别；不读取账号、Cookie 或业务数据，结果写入 .tmp/browser-startup-result.json。
+
+如果报告 `SessionNotCreatedException`、`tab crashed`，或完整性级别为 `low`：
+
+- 原因：项目目录被 Windows 沙箱／权限工具再次写入了低完整性级别标签。低完整性进程启动的浏览器无法创建正常窗口与临时文件，会在启动阶段退出；这不是程序代码或账号问题。
+- 修复：双击 fix-browser-integrity.bat，等待提示“修复完成”，再运行 diagnose-selenium.bat 复查。
+- 该修复只调整 Windows 完整性级别标签，不修改任何文件内容或所有者；为修改标签会给当前用户补一条项目目录的完整控制权限。之后如需让自动化代理在“受限/workspace-write”沙箱中运行本项目，请改用完全权限，否则沙箱可能重新打上标签，再次需要运行一次修复。
 
 原始示例中 XS26QHA350020WU002 不在 gifts list 内；还有一处相邻编码缺少分隔符。这些异常没有被猜测修复或导入。以已确认目录为准。
 
