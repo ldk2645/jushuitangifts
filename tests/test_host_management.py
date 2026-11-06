@@ -26,7 +26,7 @@ CATALOG = [{"id": "SKU-A", "name": "礼品甲"}, {"id": "SKU-B", "name": "礼品
 
 def row(order="00012345678901234567890", identifier="row-1", gift=0):
     return {"id": identifier, "order_no": order, "gift": CATALOG[gift]["name"], "gift_ids": [CATALOG[gift]["id"]],
-            "change_address": False, "recipient_name": "", "phone": "", "address": ""}
+            "change_address": False}
 
 
 class RetryOperations(FakeOperations):
@@ -334,7 +334,7 @@ class HostHTTPTests(unittest.TestCase):
     def test_host_can_list_retry_and_download_but_post_requires_csrf(self):
         with self.request("/api/config") as response:
             config = json.load(response)
-        self.assertEqual(config["version"], "1.2.0")
+        self.assertEqual(config["version"], "1.3.0")
         self.assertTrue(config["host_actions_available"])
         with self.request("/api/registrations/failures") as response:
             failure = json.load(response)["failures"][0]

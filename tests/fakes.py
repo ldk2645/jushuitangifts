@@ -22,7 +22,7 @@ class FakeOperations:
             raise TimeoutError("test only")
         if mode == "missing":
             return OrderSnapshot(order_no, False)
-        old = GiftRecord("old-" + order_no, ("N01B0L1LE91VZS8S01", "N01B0J1JDK1V007H08"))
+        old = GiftRecord("old-" + order_no, ("N01B0L1LE91VZS8S01", "N01B0J1JDK1V007H08"), gift_quantities=(1,) * len(("N01B0L1LE91VZS8S01", "N01B0J1JDK1V007H08")))
         request = self.requests.get(order_no)
         if request is None or mode == "no_new":
             return OrderSnapshot(order_no, True, (old,))
@@ -32,7 +32,7 @@ class FakeOperations:
             gifts = ("N00A0X070C0DXM7B01",) if mode == "wrong_gift" else entry.gift_ids
             recipient = Recipient("不同姓名", "不同电话", "不同地址") if mode == "wrong_address" else entry.recipient
             suffix = '' if index == 0 else f'-{index + 1}'
-            added.append(GiftRecord("new-" + order_no + suffix, gifts, recipient, "ref-" + order_no + suffix))
+            added.append(GiftRecord("new-" + order_no + suffix, gifts, recipient, "ref-" + order_no + suffix, gift_quantities=(1,) * len(gifts)))
         return OrderSnapshot(order_no + "-wrong" if mode == "wrong_order" else order_no, True, (old, *added))
 
     def submit_registration(self, request, before, *, on_submitted=None):

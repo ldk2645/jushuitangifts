@@ -71,8 +71,8 @@ class PlatformOperationsTests(unittest.TestCase):
     def setUp(self):
         self.recipient = Recipient("测试姓名", "001234567890", "测试地址")
         self.request = RegistrationRequest("00001", ("SKU-A",), ("测试礼品",))
-        self.before = OrderSnapshot("00001", True, (GiftRecord("old", ("OLD",)),))
-        self.after = OrderSnapshot("00001", True, self.before.records + (GiftRecord("new", ("SKU-A",)),))
+        self.before = OrderSnapshot("00001", True, (GiftRecord("old", ("OLD",), gift_quantities=(1,) * len(("OLD",))),))
+        self.after = OrderSnapshot("00001", True, self.before.records + (GiftRecord("new", ("SKU-A",), gift_quantities=(1,) * len(("SKU-A",))),))
         self.browsers = Mock()
         self.query = Mock()
         self.form = Mock()
@@ -153,7 +153,7 @@ class PlatformOperationsTests(unittest.TestCase):
         self.form.submit.assert_not_called()
 
     def test_mismatched_new_record_or_read_error_is_not_hidden_by_retry(self):
-        wrong = OrderSnapshot("00001", True, self.before.records + (GiftRecord("new", ("WRONG",), self.recipient),))
+        wrong = OrderSnapshot("00001", True, self.before.records + (GiftRecord("new", ("WRONG",), self.recipient, gift_quantities=(1,) * len(("WRONG",))),))
         self.query.query_order.return_value = wrong
         self.assertEqual(self.operations.wait_for_verification(self.request, self.before, SubmissionReceipt(True)), wrong)
         self.query.query_order.assert_called_once()

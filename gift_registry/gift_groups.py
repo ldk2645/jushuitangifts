@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .gift_catalog import _text
 from .sessions import atomic_write
+from .catalog_transaction import catalog_access
 
 
 class GroupConflict(ValueError):
@@ -19,7 +20,7 @@ class GiftGroupStore:
         self.lock = threading.RLock()
 
     def read(self):
-        with self.lock:
+        with catalog_access(self.path.parent), self.lock:
             if not self.path.exists():
                 return {"version": 1, "revision": 0, "groups": [
                     {"id": "xiaomi-ecosystem", "name": "小米生态链"},
@@ -39,7 +40,7 @@ class GiftGroupStore:
             return data
 
     def update(self, value):
-        with self.lock:
+        with catalog_access(self.path.parent), self.lock:
             data = self.read()
             if type(value.get("revision")) is not int or value["revision"] != data["revision"]:
                 raise GroupConflict("分组已在其他窗口更新，请重新打开分组管理")

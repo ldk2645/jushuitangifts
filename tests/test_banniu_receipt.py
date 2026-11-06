@@ -16,7 +16,7 @@ TASK = "000052"
 SKU = "000SKU01"
 NAME = "测试礼品"
 REQUEST = RegistrationRequest(ORDER, (SKU,), (NAME,))
-BEFORE = OrderSnapshot(ORDER, True, (GiftRecord("000048", ("OLD",)),))
+BEFORE = OrderSnapshot(ORDER, True, (GiftRecord("000048", ("OLD",), gift_quantities=(1,) * len(("OLD",))),))
 SUBMITTED_AT = datetime(2026, 10, 23, 10, 0, 0, 123456)
 
 

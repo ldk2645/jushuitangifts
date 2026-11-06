@@ -141,6 +141,7 @@ class ManagementTests(unittest.TestCase):
         self.management.mark(['r1'], 'pending')
         changed = deepcopy(self.records)
         changed[1]['gift'] = 'edited'
+        changed[1]['gift_unmatched'] = ['edited']  # Actual input edit; catalog display renames retain the identity.
         self.rows.write(1, changed)
         self.assertEqual(self.management.retry_candidates()['failures'], [])
 

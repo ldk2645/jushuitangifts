@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .config import ROOT
 from .sessions import atomic_write
+from .catalog_transaction import catalog_access
 
 
 class GiftCatalogConflict(ValueError):
@@ -51,21 +52,27 @@ class GiftCatalogStore:
         self.lock = threading.RLock()
 
     def read(self):
-        with self.lock:
+        with catalog_access(self.path.parent), self.lock:
             gifts = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(gifts, list) or len(gifts) > 10000:
                 raise ValueError("礼赠清单格式不正确或超过 10000 项")
             seen = set()
+            result = []
             for gift in gifts:
+                # Compatibility with the production fix observed on 2026-11-03.
+                # Ignore blank historical aliases in memory; keep disk and extra fields intact.
+                if isinstance(gift, dict) and isinstance(gift.get('aliases'), list):
+                    gift = {**gift, 'aliases': [a for a in gift['aliases'] if not (isinstance(a, str) and not a.strip())]}
                 validated = validate_gift(gift)
                 if validated["id"] in seen:
                     raise ValueError("礼赠清单存在重复商品编码")
                 seen.add(validated["id"])
-            return gifts
+                result.append(gift)
+            return result
 
     def add(self, value):
         gift = validate_gift(value)
-        with self.lock:
+        with catalog_access(self.path.parent), self.lock:
             gifts = self.read()
             if len(gifts) >= 10000:
                 raise ValueError("礼赠清单最多支持 10000 项")

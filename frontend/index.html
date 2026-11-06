@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1.0">
-  <meta name="description" content="礼赠登记工作台：以表格整理订单、礼品与收件信息。">
+  <meta name="description" content="礼赠登记工作台：以表格整理订单与礼品。">
   <title>礼赠登记 · 工作台</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/styles.css">
@@ -40,12 +40,14 @@
           <button id="paste" class="button" type="button" title="从选区左上角粘贴（Ctrl+V）"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 4H4v13h12V4h-3M7 3h6v4H7zM7 11h6m-6 3h4"/></svg>粘贴区域</button>
           <button id="add-gift" class="button" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 8h14v4H3zM5 12v5h10v-5M10 8v9M10 8C3 8 6 1 10 8Zm0 0c7 0 4-7 0 0Z"/></svg>新增礼赠</button>
           <button id="auto-fit-columns" class="button" type="button" title="按内容适配全部列，并清除手动列宽"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 3v14M17 3v14M4 10h12M7 7l-3 3 3 3m6-6 3 3-3 3"/></svg>自动列宽</button>
+          <label class="toolbar-gift-scope" for="toolbar-gift-group">礼品分组 <select id="toolbar-gift-group" aria-label="本设备礼品分组"></select></label>
           <button id="retry-failures" class="button retry-toolbar" type="button" hidden>↻ 重新登记</button>
           <button id="edit-status" class="button retry-toolbar" type="button" hidden>修改所选状态</button>
           <button id="cancel-queued" class="button retry-toolbar" type="button" hidden>取消所选排队</button>
         </div>
         <div class="toolbar-right"><button id="save" class="button save-button" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 3h10l3 3v11H3V3zM7 3v5h6V3M7 17v-5h6v5"/></svg>保存</button><button id="start-registration" class="button primary start-button" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 9 6-9 6z"/></svg><span class="start-word">star</span><span>开始登记</span></button></div>
       </div>
+      <p id="gift-scope-notice" class="gift-scope-notice" role="status" hidden>目录或分组已变更，请重新选择礼品分组后添加礼品。已有订单的已选编码保留。</p>
       <div class="formula-bar"><span id="cell-reference" class="cell-reference">A2</span><span class="formula-symbol">fx</span><input id="formula-input" type="text" autocomplete="off" aria-label="当前单元格内容" placeholder="选中单元格，即可在此查看或编辑内容" disabled></div>
       <div id="grid-scroll" class="grid-scroll" tabindex="-1">
         <details id="workspace-overview" class="workspace-overview">
@@ -57,7 +59,7 @@
             </section>
             <div class="workflow-overview" aria-label="登记流程"><div><span class="step-number">01</span><span>聚水潭查询</span></div><span class="step-arrow">›</span><div><span class="step-number">02</span><span>班牛登记</span></div><span class="step-arrow">›</span><div><span class="step-number">03</span><span>聚水潭复查</span></div><span class="step-arrow">›</span><div><span class="step-number">04</span><span>返回结果</span></div><span class="retry-policy">失败不自动重试</span></div>
             <div id="host-actions" class="host-actions" hidden>
-              <span>主机管理 · v1.2.0</span>
+              <span>主机管理 · v1.3.0</span>
 
               <button id="manage-groups" class="button" type="button">礼品分组管理</button>
               <button id="export-today" class="button" type="button">导出今日日志</button>
@@ -71,7 +73,7 @@
         <table id="registry-grid" role="grid" aria-multiselectable="true" aria-label="礼赠登记数据，可拖选区域并复制粘贴" aria-describedby="grid-help"><colgroup id="grid-columns"></colgroup><thead id="grid-head"></thead><tbody id="grid-body"></tbody></table>
         <div id="load-error" class="load-error" hidden><strong>表格暂时无法载入</strong><p>请确认工作台已启动，然后刷新页面重试。</p><button id="reload" class="button" type="button">重新载入</button></div>
       </div>
-      <div class="sheet-bottom"><button id="add-bottom" class="add-bottom" type="button"><span>＋</span> 添加一行</button><span id="grid-help">拖选 / Shift 扩选 · Ctrl+C 复制 · Ctrl+V 粘贴 · Delete 清空 · 双击 / F2 编辑</span></div>
+      <div class="sheet-bottom"><button id="add-bottom" class="add-bottom" type="button"><span>＋</span> 添加一行</button><span id="grid-help">右下角拖动填充 / Ctrl+D 向下填充 · Ctrl+C 复制 · Ctrl+V 粘贴 · Ctrl+Z 撤销 · 双击 / F2 编辑</span></div>
     </section>
     <footer class="workspace-footer"><div class="sheet-tab"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 3h14v14H3zM3 8h14M8 3v14"/></svg>礼赠登记</div><div class="sheet-summary"><span id="row-summary">共 0 行</span><span class="summary-divider"></span><span id="ready-summary">待登记 0 条</span><span id="selection-summary" class="selection-summary">未选中单元格</span></div></footer>
   </main>

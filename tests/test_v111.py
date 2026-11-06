@@ -210,7 +210,7 @@ class AutoReviewTests(IsolatedQueue):
         self.assertEqual(self.jobs.enqueue_due_reviews(due + timedelta(hours=1)), 0)
         self.assertEqual(len(self.operations.submissions), original)
 
-    def test_native_click_evidence_allows_delayed_match_without_inventing_receipt(self):
+    def test_native_click_without_receipt_cannot_attribute_a_delayed_match(self):
         def tracked(request, before, callback):
             callback()
             return self.operations.submit_registration(request, before)
@@ -219,7 +219,8 @@ class AutoReviewTests(IsolatedQueue):
         self.operations.modes.clear()
         self.jobs.enqueue_due_reviews(due)
         self.jobs.pending.join()
-        self.assertEqual(self.jobs.states()["row-1"]["state"], "success")
+        self.assertEqual(self.jobs.states()["row-1"]["state"], "failed")
+        self.assertIn("有效回执", self.jobs.states()["row-1"]["detail"])
         self.assertEqual(len(self.operations.submissions), 1)
 
     def test_timeout_without_click_evidence_and_query_failure_never_upgrade_from_other_new_record(self):
@@ -242,7 +243,7 @@ class AutoReviewTests(IsolatedQueue):
         self.assertEqual(self.jobs.states()["row-1"]["state"], "failed")
 
     def test_old_matching_gift_is_not_new_information(self):
-        self.operations.query_order = lambda order: OrderSnapshot(order, True, (GiftRecord("old", ("SKU-A",)),))
+        self.operations.query_order = lambda order: OrderSnapshot(order, True, (GiftRecord("old", ("SKU-A",), gift_quantities=(1,) * len(("SKU-A",))),))
         due = self.fail()
         self.jobs.enqueue_due_reviews(due)
         self.jobs.pending.join()
@@ -251,7 +252,7 @@ class AutoReviewTests(IsolatedQueue):
     def test_missing_baseline_is_read_once_but_never_marks_success(self):
         due = self.fail("query_error")
         self.operations.modes.clear()
-        self.operations.query_order = lambda order: OrderSnapshot(order, True, (GiftRecord("new", ("SKU-A",)),))
+        self.operations.query_order = lambda order: OrderSnapshot(order, True, (GiftRecord("new", ("SKU-A",), gift_quantities=(1,) * len(("SKU-A",))),))
         self.jobs.enqueue_due_reviews(due)
         self.jobs.pending.join()
         self.assertEqual(self.jobs.states()["row-1"]["state"], "failed")

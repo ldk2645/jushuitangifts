@@ -19,16 +19,18 @@ def copy_tree(source, target):
         shutil.copytree(source, target, ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '*.lock'))
 
 
-def write_lan_assets(destination):
+def write_lan_assets(destination, port=8766):
     for filename, mode in (('lan-setup.bat', 'lan-setup'), ('lan-info.bat', 'lan-info'), ('lan-disable.bat', 'lan-disable')):
         (destination / filename).write_text(
             '@echo off\ncd /d "%~dp0"\n"%~dp0runtime\\python.exe" "%~dp0portable.py" ' + mode + '\npause\n',
             encoding='ascii')
     shutil.copy2(ROOT / 'allow-lan.ps1', destination / 'allow-lan.ps1')
     (destination / 'allow-lan.bat').write_text(
-        '@echo off\ncd /d "%~dp0"\npowershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0allow-lan.ps1" -Port 8766\npause\n',
+        '@echo off\ncd /d "%~dp0"\npowershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0allow-lan.ps1" -Port ' + str(port) + '\npause\n',
         encoding='ascii')
     guide = (ROOT / 'docs' / 'portable-lan.md').read_text(encoding='utf-8')
+    if port != 8766:
+        guide = '隔离候选包，仅供离线验收，尚未批准上线。\n\n' + guide.replace('8766', str(port))
     (destination / '局域网使用说明.txt').write_text(guide, encoding='utf-8-sig')
     shutil.copy2(ROOT / 'docs' / 'portable-lan.md', destination / 'docs' / 'portable-lan.md')
 
@@ -45,8 +47,12 @@ def write_settings_assets(destination):
     shutil.copy2(ROOT/'docs/portable-settings.md', destination/'docs/portable-settings.md')
 
 
-def build(destination, chrome_relative=None, driver=None):
+def build(destination, chrome_relative=None, driver=None, *, candidate=False):
     destination = destination.resolve()
+    port = 18766 if candidate else 8766
+    for protected in (Path(r'D:\UserData\Desktop\NL'), Path(r'E:\gifts')):
+        if candidate and (destination == protected or destination.is_relative_to(protected)):
+            raise ValueError('候选包禁止写入生产目录或 U 盘')
     chrome = (destination / chrome_relative).resolve() if chrome_relative else None
     if chrome is not None and (not chrome.is_relative_to(destination) or not chrome.is_file() or driver is None):
         raise ValueError('指定便携 Chrome 不在目标目录内或不存在，或未指定配套驱动')
@@ -85,12 +91,14 @@ def build(destination, chrome_relative=None, driver=None):
         shutil.copy2(ROOT / name, destination / name)
     shutil.copy2(ROOT / '.gitignore', destination / '.gitignore')
     (destination / 'tools').mkdir()
-    shutil.copy2(ROOT / 'tools' / 'build_portable.py', destination / 'tools' / 'build_portable.py')
+    for name in ('build_portable.py', 'catalog_harness.py', 'prepare_v120_rollback.py', 'check_dev_isolation.py'):
+        shutil.copy2(ROOT / 'tools' / name, destination / 'tools' / name)
     (destination / 'docs').mkdir()
-    for name in ('business-workflow.md', 'automatic-login.md', 'lan.md', 'catalog-name-review-2026-10-28.md'):
+    for name in ('business-workflow.md', 'automatic-login.md', 'lan.md', 'catalog-name-review-2026-10-28.md',
+                 'catalog-harness.md', 'catalog-harness-policy.json', 'deepseek-catalog-prompt.md'):
         shutil.copy2(ROOT / 'docs' / name, destination / 'docs' / name)
     copy_tree(ROOT / 'docs' / 'releases', destination / 'docs' / 'releases')
-    write_lan_assets(destination)
+    write_lan_assets(destination, port)
     (destination / 'config').mkdir()
     write_settings_assets(destination)
     shutil.copy2(ROOT / 'browser-settings.bat', destination / 'browser-settings.bat')
@@ -106,7 +114,7 @@ def build(destination, chrome_relative=None, driver=None):
     for name in ('registration_jobs', 'registration_archive', 'exports', 'draft_archive', 'backups'):
         copy_tree(ROOT / 'data' / name, destination / 'data' / name)
     manifest = {'version': __version__, 'built_at': datetime.now().astimezone().isoformat(),
-                'browser': 'chrome' if chrome else 'edge', 'port': 8766,
+                'browser': 'chrome' if chrome else 'edge', 'port': port, 'release_candidate': candidate,
                 'python': sys.version.split()[0], 'platform': 'Windows x64'}
     if chrome:
         manifest.update(chrome=chrome.relative_to(destination).as_posix(), driver='drivers/chromedriver.exe')
@@ -117,7 +125,9 @@ def build(destination, chrome_relative=None, driver=None):
             encoding='ascii')
     (destination / '便携版使用说明.txt').write_text(f'''礼赠自动登记工具 v{__version__} U 盘便携版（Windows 10/11 x64）
 
-1. 双击 start.bat，工作台地址 http://127.0.0.1:8766/ 。启动窗口保持打开。
+{'隔离候选包：尚未批准上线，仅在独立目录验收，不得覆盖生产或 U 盘。' if candidate else ''}
+
+1. 双击 start.bat，工作台地址 http://127.0.0.1:{port}/ 。启动窗口保持打开。
 2. 首次在新电脑使用，点“平台登录”或双击 login.bat，手动完成两平台登录及验证，保存并关闭助手。
    若需账号密码自动登录，双击 accounts.bat 在目标电脑输入，密码不回显、由该 Windows 用户加密。
 3. 已包含 Python 3.12、Tk、Selenium；不使用电脑上的 Python，不必运行 setup.ps1。
@@ -141,8 +151,11 @@ def build(destination, chrome_relative=None, driver=None):
               for name in names if name != 'portable-files.sha256.json'
               for p in ((destination / name).rglob('*') if (destination / name).is_dir() else [destination / name])
               if p.is_file()}
+    if chrome:
+        hashes.update({p.relative_to(destination).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                       for p in chrome.parent.rglob('*') if p.is_file()})
     (destination / 'portable-files.sha256.json').write_text(json.dumps(hashes, indent=2), encoding='utf-8')
-    print(json.dumps({'copied_files': len(hashes), 'destination': str(destination), 'port': 8766}))
+    print(json.dumps({'copied_files': len(hashes), 'destination': str(destination), 'port': port}))
 
 
 if __name__ == '__main__':
@@ -150,7 +163,8 @@ if __name__ == '__main__':
     parser.add_argument('--destination', type=Path, required=True)
     parser.add_argument('--chrome', help='可选：制作旧版 Chrome 包时的相对路径；默认使用系统 Edge')
     parser.add_argument('--driver', type=Path)
+    parser.add_argument('--candidate', action='store_true', help='隔离验收候选包，固定使用 18766 端口，不部署生产')
     args = parser.parse_args()
     if sys.version_info[:2] != (3, 12) or sys.maxsize <= 2**32:
         raise SystemExit('请使用当前项目的 Windows x64 Python 3.12 环境制作')
-    build(args.destination, args.chrome, args.driver)
+    build(args.destination, args.chrome, args.driver, candidate=args.candidate)

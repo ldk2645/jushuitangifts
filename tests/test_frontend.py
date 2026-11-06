@@ -17,11 +17,11 @@ class UnconfiguredOperations(FakeOperations):
 
 def sample():
     return {"id": "row-1", "order_no": "00012345678901234567890", "gift": "米家保温杯口袋版", "gift_ids": ["N01B0L1LE91VZS8S01"],
-            "change_address": True, "recipient_name": "测试姓名", "phone": "0013800000000", "address": "测试地址"}
+            "change_address": False}
 
 
 class RowStoreTests(unittest.TestCase):
-    def test_long_identifiers_and_address_are_preserved_after_reload(self):
+    def test_long_identifiers_are_preserved_after_reload(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
             path = Path(folder) / "rows.json"
             store = RowStore(path)
@@ -114,8 +114,9 @@ class FrontendHTTPTests(unittest.TestCase):
                 with urlopen(url + "/") as response:
                     self.assertIn("礼赠登记表", response.read().decode())
                 with urlopen(url + "/api/config") as response:
-                    token = json.load(response)["token"]
-                payload = json.dumps({"revision": 0, "rows": [sample()]}).encode()
+                    config = json.load(response); token = config["token"]
+                record = {**sample(), "selection_scope": {"group_id": "", "group_revision": config["gift_groups"]["revision"], "catalog_version": config["catalog_version"]}}
+                payload = json.dumps({"revision": 0, "rows": [record]}).encode()
                 with self.assertRaises(HTTPError) as error:
                     urlopen(Request(url + "/api/rows", data=payload, method="PUT"))
                 self.assertEqual(error.exception.code, 403)
@@ -151,7 +152,7 @@ class RegistrationTests(unittest.TestCase):
             jobs.close()
 
     def test_incomplete_or_unmatched_draft_is_rejected(self):
-        for row in ({**sample(), "gift": "未知礼品"}, {**sample(), "gift_ids": []}, {**sample(), "phone": ""}):
+        for row in ({**sample(), "gift": "未知礼品"}, {**sample(), "gift_ids": []}, {**sample(), "change_address": True}):
             with self.subTest(row=row), self.assertRaises(ValueError):
                 registration_rows([row], load_gifts())
 

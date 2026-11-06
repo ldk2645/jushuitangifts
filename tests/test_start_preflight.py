@@ -233,9 +233,9 @@ class QueueStartPreflightTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
             operations = PreflightOperations(blocked=True)
             with RegistrationQueue(folder, operations=operations) as jobs:
-                jobs.start([sample(change_address=True), sample("second", "00010", change_address=True)], load_gifts())
-                jobs.pending.join()
-                self.assertEqual({state["state"] for state in jobs.states().values()}, {"failed"})
+                with self.assertRaisesRegex(ValueError, "本版本不支持"):
+                    jobs.start([sample(change_address=True), sample("second", "00010", change_address=True)], load_gifts())
+                self.assertEqual(jobs.states(), {})
                 self.assertEqual(operations.preflight_calls, 0)
                 self.assertEqual(operations.trace, [])
 
@@ -263,9 +263,11 @@ class StartPreflightHTTPTests(unittest.TestCase):
             url = f"http://127.0.0.1:{server.server_port}"
             try:
                 with urlopen(url + "/api/config", timeout=5) as response:
-                    token = json.load(response)["token"]
+                    config = json.load(response); token = config['token']
                 headers = {"X-CSRF-Token": token}
-                payload = json.dumps({"revision": 0, "rows": [sample()]}).encode("utf-8")
+                record = {**sample(), 'selection_scope': {'group_id': '', 'group_revision': config['gift_groups']['revision'],
+                                                         'catalog_version': config['catalog_version']}}
+                payload = json.dumps({"revision": 0, "rows": [record]}).encode("utf-8")
                 with urlopen(Request(url + "/api/rows", data=payload, method="PUT", headers=headers), timeout=5) as response:
                     revision = json.load(response)["revision"]
                 draft = store.path.read_bytes()

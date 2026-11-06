@@ -67,9 +67,10 @@ class PlatformOperations(Protocol):
 
 def request_from_row(row, catalog):
     names = {item["id"]: item["name"] for item in catalog}
-    recipient = Recipient(row["recipient_name"].strip(), row["phone"].strip(), row["address"].strip()) if row["change_address"] else None
+    if row.get("change_address", False):
+        raise PlatformOperationError("本版本不支持改地址；未查询或提交。请删除不支持的旧草稿，确认原意后新建原地址订单")
     return RegistrationRequest(row["order_no"].strip(), tuple(row["gift_ids"]),
-                               tuple(names[identifier] for identifier in row["gift_ids"]), recipient)
+                               tuple(names[identifier] for identifier in row["gift_ids"]), None)
 
 
 def _normalize(value):
@@ -136,6 +137,8 @@ def verify_new_records(request, before, after, receipt):
     validate_receipt(receipt)
     if not before.found or not receipt.accepted:
         return False, "原订单或班牛提交状态未确认", []
+    if not receipt.created_record_ids and not receipt.reference.strip():
+        return False, "缺少本次回执的唯一关联，不能确认新增记录归属", []
     return verify_added_records(request, before, after, receipt.created_record_ids, receipt.reference)
 
 
@@ -159,9 +162,11 @@ def verify_added_records(request, before, after, expected_ids=(), reference=""):
             return False, "聚水潭新增记录的关联凭证与本次提交不一致", []
     if not added:
         return False, "聚水潭未发现本次登记的新增信息", []
+    if any(len(record.gift_quantities) != len(record.gift_ids) for record in added):
+        return False, "聚水潭新增商品数量缺失，不能默认按一件确认", []
     actual_quantities = Counter()
     for record in added:
-        quantities = record.gift_quantities or (1,) * len(record.gift_ids)
+        quantities = record.gift_quantities
         actual_quantities.update(dict(zip(record.gift_ids, quantities)))
     # 前端每项礼品仅可选择一次；同编码在不同新增单据中出现也必须累计。
     expected_quantities = Counter({identifier: 1 for identifier in request.gift_ids})

@@ -1,0 +1,58 @@
+# v1.3.0 受限目录维护工具
+
+状态：代码与离线协议可运行；真实商品页面适配尚未配置。用户选择本轮不登录，因此 `query` 如实返回 `blocked`，不返回猜测的名称。没有读取账号、Cookie、DPAPI 或真实订单。
+
+## 运行与边界
+
+在本隔离副本运行 `.venv\Scripts\python.exe -X utf8 tools\catalog_harness.py`，通过 stdin 传一个 JSON 对象。`--stdio` 接受一行一个 JSON 请求，输出一行一个结果。Python 仅使用当前代码所在根目录，不接受模型输入的 root、path、URL、脚本、shell 或动态模块名。
+
+项目配置写入目标固定为 `config/gifts.json` 和 `config/gift_groups.local.json`。计划、证据、备份、事务日志、批准和独立浏览器目录都位于 `.tmp/catalog-maintenance/`。生产目录 `D:\UserData\Desktop\NL` 及其子目录、`E:\gifts` 及其子目录均拒绝作为本开发工具的应用目标；所有路径检查符号链接和 junction。
+
+模型路由仅开放 `status/query/plan/apply/recover`。主机 `--approve PLAN_ID` 不属于模型路由。`apply` 必须有主机对该摘要计划的批准；同一计划重复应用不重复追加别名或推进 revision。不得将普通 shell、Python 执行或文件写入工具同时交给维护代理。
+
+本轮按用户要求交付代码和 prompt，未安装或修改实际 DeepSeek harness。`catalog-harness-policy.json` 是供宿主适配的权限规范，**不是已安装的 OS 沙箱或某个厂商 harness 的有效配置声明**。调用方须把固定启动命令封装成单一 JSON 工具，禁止模型改变启动参数、调用批准命令及读写源码。若宿主无法剥离广泛文件/执行工具，只允许 dry-run，不向该会话开放 apply。代码白名单和宿主权限路由是两个防线，不能用 prompt 代替权限隔离。
+
+## JSON 协议
+
+默认 `op` 为 `plan`，不会修改两份配置。
+
+```json
+{"op":"status"}
+{"op":"query","codes":["SYN-001","SYN-002"]}
+{"op":"plan","evidence_ids":["工具实际返回的64位证据摘要"],"changes":[{"code":"SYN-001","name":"经两平台精确核实的合成名称","aliases_add":[]}]}
+{"op":"plan","changes":[{"code":"SYN-001","groups":{"mode":"add","ids":["synthetic-group"]}}]}
+{"op":"apply","plan_id":"经主机批准的64位计划摘要"}
+{"op":"recover"}
+```
+
+上面的名称和编码都是协议示例，不是平台核验结果。已有分组维护 `mode` 支持 `add/remove/replace`；`replace` 空列表表示明确移出所有分组。创建分组必须显式给出 `create_groups:[{"id":"synthetic-group","name":"合成分组"}]`。新增商品必须同时给出 `add_items` 与完全相同的 `allow_add_codes`，且名称须有两个平台的精确查询证据；默认不增加、删除或改写编码。
+
+更名仅接受两个平台对同一完整编码观察到相同名称的工具证据；未找到、页面不完整、认证失效、同编码冲突或两平台不一致均进入 pending，整个计划不可应用。别名只接受已有有效名称/别名或实际观察到的名称。更名保留原名与有效旧别名，超出实际 30 项/别名 100 字符/名称 200 字符限制时拒绝，不截断。历史空白别名在普通读取时兼容忽略，更名移除空白时会出现在完整前后差异中。
+
+主机必须先核对 plan 返回的完整编码、前后名称/别名、各项分组前后差异及新增分组，然后明确执行：
+
+```powershell
+# 仅主机操作；PLAN_ID 必须来自刚审核过的计划。
+.\.venv\Scripts\python.exe -X utf8 tools\catalog_harness.py --approve PLAN_ID
+# 再向模型路由提交 {"op":"apply","plan_id":"PLAN_ID"}
+```
+
+计划绑定两个原始文件 SHA-256 和分组 revision，预览后任意文件变化都会拒绝应用。普通更名不重写分组文件；实际归属变化才增加 revision。
+
+## 中断恢复
+
+两个 `replace` 不是真正的文件系统跨文件原子事务。工具在互斥锁内先持久化 pending 日志和原始备份，再替换变更目标；目录与分组读端共用互斥及事务检查。进程中断后，读端拒绝读取半套配置，主机调用 `recover` 回滚到原始两文件。若发现事务外修改，则保持阻塞并要求主机核查，不覆盖新内容。备份位于维护工作目录，项目历史任务文件不会被修改。
+
+## 平台查询适配待办
+
+`UnconfiguredProductReader` 当前故意拒绝真实查询。后续由主开发人员在独立 Selenium 配置中检查班牛及聚水潭商品查询入口、完整编码筛选、分页/加载、编码和名称列及认证状态后实现只读 reader；不导入登记队列、订单查询或提交编排。不允许 DeepSeek 修改该适配代码。若只能在新建礼赠页搜索商品，只能使用工具自己创建的空白未提交表单，不输入真实订单或点击提交。
+
+reader 只返回 `platform / queried_code / observed_at / status / matches[{code,name}] / reason`。计划使用维护工具保存的证据摘要，不接受模型自行编写的网页“证据”。两平台同编码同名时，现有班牛名称比较的精确相等分支与新名称一致；若后续适配发现不兼容，停止该项应用，交主开发人员审核，不能授权 harness 更改页面适配器。
+
+测试中的 `SyntheticReader` 只在测试模块显式注入；CLI 不暴露 reader 注入或任意代码执行。离线通过不等于真实平台查询已经验证。
+
+## 实际离线示例
+
+合成夹具 `00-Ab/1` 原名“合成旧名称”，别名为“合成旧别名”，属于 a、b 两组。用显式注入的 SyntheticReader 产生标记为合成的两平台结果后，预览更名为“合成核实名称”、移出 a 组：新别名为“合成旧别名、合成旧名称”，保留 b 组及自定义字段；另一同名编码 `00-Ab/2` 不变。dry-run 两文件字节未变，主机批准后在临时合成目录应用成功，第二次 apply 返回 idempotent=true，revision 只增加一次。完整实际输出保存在开发副本 `.tmp/harness-demo-result.json`。
+
+真实 CLI 对 `{"op":"query","codes":["SYN-001"]}` 返回两平台 blocked；该调用只验证 JSON 协议和能力缺口，没有网络查询。临时夹具的应用结果不得作为真实平台或生产目录更新证据。

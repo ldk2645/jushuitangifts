@@ -15,13 +15,13 @@ from gift_registry.workflow import GiftRecord, OrderSnapshot, Recipient, Submiss
 
 def sample(identifier="manual-example"):
     return {"id": identifier, "order_no": "00009", "gift": "米家保温杯口袋版、小米小背包",
-            "gift_ids": ["N01B0L1LE91VZS8S01", "N01B0J1JDK1V007H08"], "change_address": True,
+            "gift_ids": ["N01B0L1LE91VZS8S01", "N01B0J1JDK1V007H08"], "change_address": False,
             "recipient_name": "隔离测试姓名", "phone": "0013800000000", "address": "隔离测试地址"}
 
 
 def snapshots(row=None):
     request = request_from_row(row or sample(), load_gifts())
-    old = GiftRecord("old-00009", ("original-sku",))
+    old = GiftRecord("old-00009", ("original-sku",), gift_quantities=(1,) * len(("original-sku",)))
     before = OrderSnapshot("00009", True, (old,))
     after = OrderSnapshot("00009", True,
                           (old, GiftRecord("new-00009", request.gift_ids, request.recipient,
@@ -145,16 +145,16 @@ class ManualCompletionTests(unittest.TestCase):
                 self.assertEqual(jobs.record_external_submission(sample(), load_gifts(), *arguments), initial)
             self.assertEqual(path.read_bytes(), saved)
 
-    def test_existing_matching_gifts_wrong_quantity_or_address_never_verify_success(self):
+    def test_existing_matching_gifts_wrong_quantity_or_unlinked_receipt_never_verify_success(self):
         before, after, _ = snapshots()
         scenarios = (
             before,
-            OrderSnapshot("00009", True, before.records + (GiftRecord("new", ("wrong-sku",)),)),
+            OrderSnapshot("00009", True, before.records + (GiftRecord("new", ("wrong-sku",), gift_quantities=(1,) * len(("wrong-sku",))),)),
             OrderSnapshot("00009", True, before.records +
                           (GiftRecord("new", after.records[-1].gift_ids, after.records[-1].recipient,
                                       gift_quantities=(2, 1)),)),
             OrderSnapshot("00009", True, before.records +
-                          (GiftRecord("new", after.records[-1].gift_ids, Recipient("wrong", "wrong", "wrong")),)),
+                          (GiftRecord("new", after.records[-1].gift_ids, Recipient("wrong", "wrong", "wrong"), gift_quantities=(1,) * len(after.records[-1].gift_ids)),)),
         )
         for observed in scenarios:
             with self.subTest(after=observed), RegistrationQueue(self.folder(), operations=FakeOperations()) as jobs:

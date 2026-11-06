@@ -1,0 +1,14 @@
+{
+  "kind": "integration-requirements-not-a-vendor-config",
+  "protocol": "jsonl",
+  "launcher": ["<isolated-checkout>/.venv/Scripts/python.exe", "-X", "utf8", "<isolated-checkout>/tools/catalog_harness.py", "--stdio"],
+  "model_operations": ["status", "query", "plan", "apply", "recover"],
+  "model_must_not_control": ["launcher", "root", "work_directory", "reader_adapter", "approval_command", "permissions"],
+  "project_write_allowlist": ["config/gifts.json", "config/gift_groups.local.json"],
+  "private_maintenance_write_root": ".tmp/catalog-maintenance",
+  "private_host_only": [".tmp/catalog-maintenance/approvals", "--approve"],
+  "denied_model_tools": ["shell", "exec", "python", "write_file", "edit_file", "arbitrary_browser", "account_store", "session_store"],
+  "default": "dry-run",
+  "apply_requires": ["host approval of exact plan hash", "source hashes unchanged", "group revision unchanged", "schema and cross-reference checks", "no pending query evidence"],
+  "deployment": "not installed; operator must implement these routes in their actual harness"
+}

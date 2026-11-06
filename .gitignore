@@ -45,3 +45,7 @@ build/
 !/docs/portable-settings.md
 !/docs/catalog-name-review-*.md
 !/docs/releases/
+!/docs/catalog-harness.md
+!/docs/catalog-harness-policy.json
+!/docs/deepseek-catalog-prompt.md
+/gifts-ry/

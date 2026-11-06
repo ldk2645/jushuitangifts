@@ -4,20 +4,41 @@ const $ = (selector) => document.querySelector(selector);
 const fields = {
   order_no: { label: "订单号", placeholder: "输入订单号", max: 200 },
   gift: { label: "礼品", placeholder: "多个礼品用逗号、顿号或空格分隔", max: 500 },
-  change_address: { label: "是否改地址" },
-  recipient_name: { label: "姓名", placeholder: "收件人姓名", max: 100 },
-  phone: { label: "电话", placeholder: "收件人电话", max: 60 },
-  address: { label: "地址", placeholder: "填写完整收件地址", max: 2000 },
   status: { label: "状态" },
 };
-const addressFields = ["recipient_name", "phone", "address"];
 let rows = [], revision = 0, token = "", active = null, initialized = false;
 let version = 0, savedVersion = 0, saveTimer, saving = null, conflict = false, toastTimer;
-let stateEpoch = 0;
+let stateEpoch = 0, pollSequence = 0;
 let giftCatalog = [], rowStates = {}, pickerRowId = null, starting = false;
 let creatingGift = false, createGiftRowId = null, catalogRefreshing = null;
 let catalogEditable = false;
 let giftGroups = { revision: 0, groups: [], memberships: {} }, selectedGiftGroup = "", selectedStatus = "", displayedRows = [];
+let catalogVersion = "", scopeInvalid = false;
+const scopeStorageKey = "gift_registry.input_scope.v1";
+function currentScope() { return {group_id: selectedGiftGroup, group_revision: giftGroups.revision, catalog_version: catalogVersion}; }
+function persistScope() { try { localStorage.setItem(scopeStorageKey, JSON.stringify(currentScope())); } catch { /* 页面内仍有效。 */ } }
+function restoreScope() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(scopeStorageKey) || "null");
+    if (!saved) return;
+    selectedGiftGroup = typeof saved.group_id === "string" ? saved.group_id : "";
+    scopeInvalid = saved.group_revision !== giftGroups.revision || saved.catalog_version !== catalogVersion ||
+      !["", "__ungrouped", ...giftGroups.groups.map(group => group.id)].includes(selectedGiftGroup);
+  } catch { scopeInvalid = true; }
+}
+function scopedGifts() { return scopeInvalid ? [] : giftCatalog.filter(gift => inGiftGroup(gift.id, selectedGiftGroup)); }
+function ensureGiftScope(ids) {
+  if (!ids.length) return;
+  if (scopeInvalid) throw new Error("分组或目录已更新，请重新选择礼品分组");
+  const allowed = new Set(scopedGifts().map(gift => gift.id));
+  if (ids.some(id => !allowed.has(id))) throw new Error("当前分组未找到，请切换分组；本次选择未应用");
+}
+function acceptCatalogContext(result) {
+  const groups = result.gift_groups || giftGroups;
+  if (catalogVersion && (catalogVersion !== result.catalog_version || giftGroups.revision !== groups.revision)) scopeInvalid = true;
+  catalogVersion = result.catalog_version || catalogVersion;
+  giftGroups = groups; giftMatcher = null; renderGroupFilter();
+}
 let hostActionsAvailable = false, groupSelection = new Set(), groupsSaving = false;
 const statusOptions = { "": "全部状态", ready: "待登记", processing: "进行中", success: "成功", failed: "失败", cancelled: "已取消", manual_success: "人工标记成功", manual_failed: "人工标记失败", manual_pending: "人工待核查", skipped: "已跳过", incomplete: "待完善", empty: "空白", queued: "待接入" };
 function gridRows() { return displayedRows; }
@@ -28,7 +49,7 @@ let rowNodes = new Map(), selectedNodes = new Set(), forceRangeCopy = false;
 const rangeClipboardType = "application/x-gift-registry-range+json";
 const history = [];
 const layoutStorageKey = "gift_registry.column_widths.v1";
-const columnRules = { order_no: { min: 120, base: 180 }, gift: { min: 140, base: 190 }, change_address: { min: 112, base: 112 }, status: { min: 112, base: 112 } };
+const columnRules = { order_no: { min: 120, base: 180 }, gift: { min: 140, base: 190 }, status: { min: 112, base: 112 } };
 let manualWidths = {}, layoutFrame = null, resizingColumn = null;
 try {
   const saved = JSON.parse(localStorage.getItem(layoutStorageKey) || "{}");
@@ -154,8 +175,7 @@ function newRowId() {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 function newRow() {
-  return { id: newRowId(), order_no: "", gift: "", gift_ids: [], change_address: false,
-    recipient_name: "", phone: "", address: "" };
+  return { id: newRowId(), order_no: "", gift: "", gift_ids: [], change_address: false, gift_unmatched: [] };
 }
 function normalizeGift(text) { return text.toLowerCase().replace(/[^\p{L}\p{N}]/gu, ""); }
 function similarity(a, b) {
@@ -172,19 +192,27 @@ function giftLabelScore(value, candidate) {
   if (candidate.includes(value) || value.includes(candidate)) return .8 + .15 * Math.min(candidate.length, value.length) / Math.max(candidate.length, value.length);
   return Math.min(value.length, candidate.length) >= 2 ? similarity(value, candidate) * .9 : 0;
 }
+function isGiftCodeInput(text) {
+  const input = text.trim();
+  // 编码按原字符串识别；疑似编码也不能借名称/别名的模糊匹配纠错。
+  return giftCatalog.some(gift => normalizeGift(gift.id) === normalizeGift(input)) ||
+    (/^[A-Za-z0-9_./:#@()+-]+$/u.test(input) && /[0-9_./:#@()+-]/u.test(input));
+}
 function giftScore(text, gift) {
+  if (giftCatalog.some(item => item.id === text.trim()) || isGiftCodeInput(text)) return gift.id === text.trim() ? 1 : 0;
   const value = normalizeGift(text);
   if (!value) return 0;
-  return Math.max(...[gift.id, gift.name, ...(gift.aliases || [])].map(label => giftLabelScore(value, normalizeGift(label))));
+  return Math.max(...[gift.name, ...(gift.aliases || [])].map(label => giftLabelScore(value, normalizeGift(label))));
 }
 let giftMatcher = null;
 function matchingContext() {
-  if (giftMatcher?.catalog === giftCatalog && giftMatcher.size === giftCatalog.length) return giftMatcher;
+  const scopeKey = JSON.stringify([selectedGiftGroup, giftGroups.revision, catalogVersion, scopeInvalid]);
+  if (giftMatcher?.catalog === giftCatalog && giftMatcher.scopeKey === scopeKey) return giftMatcher;
   const exact = new Map(), codes = new Map(), entries = [], protectedLabels = [];
   let maxWords = 8;
-  for (const gift of giftCatalog) {
+  for (const gift of scopedGifts()) {
     codes.set(gift.id, gift.id);
-    const labels = [gift.id, gift.name, ...(gift.aliases || [])];
+    const labels = [gift.name, ...(gift.aliases || [])];
     entries.push({ gift, labels: [...new Set(labels.map(normalizeGift).filter(Boolean))] });
     for (const label of labels) {
       const key = normalizeGift(label);
@@ -197,8 +225,12 @@ function matchingContext() {
       }
     }
   }
+  for (const gift of giftCatalog) {
+    const escaped = gift.id.replace(/[.*+?^$()|[\]{}\\]/g, "\\$&");
+    protectedLabels.push({label: gift.id, pattern: new RegExp("^(?:" + escaped + ")", "u")});
+  }
   protectedLabels.sort((a, b) => b.label.length - a.label.length);
-  giftMatcher = { catalog: giftCatalog, size: giftCatalog.length, exact, codes, entries, protectedLabels, maxWords, parts: new Map(), results: new Map() };
+  giftMatcher = { scopeKey, catalog: giftCatalog, size: giftCatalog.length, exact, codes, entries, protectedLabels, maxWords, parts: new Map(), results: new Map() };
   return giftMatcher;
 }
 function resolveGiftPart(text, strict = false) {
@@ -206,7 +238,9 @@ function resolveGiftPart(text, strict = false) {
   if (context.parts.has(key)) return context.parts.get(key);
   const exact = context.exact.get(value);
   let result;
-  if (context.codes.has(text.trim())) result = { id: context.codes.get(text.trim()), score: 1, exact: true };
+  if (giftCatalog.some(gift => gift.id === text.trim()) && !context.codes.has(text.trim())) result = { id: null, score: 0, exact: true };
+  else if (context.codes.has(text.trim())) result = { id: context.codes.get(text.trim()), score: 1, exact: true };
+  else if (isGiftCodeInput(text)) result = {id: null, score: 0, exact: true};
   else if (exact) result = { id: exact.size === 1 ? [...exact][0] : null, score: exact.size === 1 ? 1 : 0, exact: true };
   else {
     const matches = context.entries.map(({ gift, labels }) => {
@@ -284,6 +318,10 @@ function matchSpaceGiftParts(text) {
 function matchGifts(text) {
   const context = matchingContext(), cached = context.results.get(text);
   if (cached) return { ids: [...cached.ids], unmatched: [...cached.unmatched] };
+  if (giftCatalog.some(gift => normalizeGift(gift.id) === normalizeGift(text.trim()))) {
+    const match = resolveGiftPart(text);
+    return {ids: match.id ? [match.id] : [], unmatched: match.id ? [] : [text.trim()]};
+  }
   const ids = [], unmatched = [];
   for (const part of splitGiftParts(text)) {
     for (const segment of matchSpaceGiftParts(part)) {
@@ -297,6 +335,7 @@ function matchGifts(text) {
 }
 function giftNames(ids) { return ids.map(id => giftCatalog.find(gift => gift.id === id)?.name).filter(Boolean); }
 function unresolvedGiftLabels(row) {
+  if (Array.isArray(row.gift_unmatched)) return row.gift_unmatched;
   const selected = giftNames(row.gift_ids || []).join("、");
   if (row.gift === selected) return [];
   // 已选编码是身份依据；同名 SKU 的展示名称不能再反向解析成未匹配项。
@@ -308,20 +347,24 @@ function unresolvedGiftLabels(row) {
   return matched.unmatched.filter(label => !selectedLabels.has(normalizeGift(label)));
 }
 function assignGifts(row, ids, unmatched = []) {
-  row.gift_ids = [...new Set(ids)].filter(id => giftCatalog.some(gift => gift.id === id));
-  row.gift = [...giftNames(row.gift_ids), ...unmatched].join("、");
+  const unique = [...new Set(ids)];
+  ensureGiftScope(unique.filter(id => !(row.gift_ids || []).includes(id)));
+  row.gift_ids = unique;
+  row.gift_unmatched = [...unmatched];
+  row.gift = [...giftNames(unique), ...unmatched].join("、");
+  row.selection_scope = currentScope();
+  row.gift_selection = {source: "confirmed", gift_ids: [...unique], label: giftNames(unique).join("、")};
 }
-function rowSignature(row) { return JSON.stringify([row.id, row.order_no, row.gift, row.gift_ids || [], row.change_address, row.recipient_name, row.phone, row.address]); }
+function rowSignature(row) { return JSON.stringify([row.id, row.order_no.trim(), [...new Set(row.gift_ids || [])].sort(), row.change_address || false, row.gift_unmatched || []]); }
 function taskIdentity(row) { return JSON.stringify([row.order_no.trim(), [...new Set(row.gift_ids || [])].sort()]); }
-function validGifts(row) { return row.gift_ids?.length && row.gift === giftNames(row.gift_ids).join("、") && row.gift_ids.every(id => giftCatalog.some(gift => gift.id === id)); }
-function columns() {
-  return ["order_no", "gift", "change_address", "status"];
-}
+function validGifts(row) { return Boolean(row.gift_ids?.length && !unresolvedGiftLabels(row).length
+  && row.gift_ids.every(id => giftCatalog.some(gift => gift.id === id))); }
+function columns() { return ["order_no", "gift", "status"]; }
 function filled(row) { return Boolean(row.order_no.trim() || row.gift.trim() || row.change_address); }
 function status(row) {
   if (!filled(row)) return { label: "—", type: "empty" };
-  const complete = row.order_no.trim() && validGifts(row)
-    && (!row.change_address || addressFields.every(field => row[field].trim()));
+  if (row.change_address) return {label: "旧草稿不支持", type: "incomplete", detail: "该草稿要求改地址，本版本不支持。请核对原意后删除此行并新建原地址订单；不会自动执行，也不展示旧收件信息。"};
+  const complete = row.order_no.trim() && validGifts(row);
   if (complete && rowStates[row.id]?.signature === rowSignature(row)) {
     const state = rowStates[row.id];
     const labels = { waiting_for_workflow: ["待接入流程", "queued"], queued: ["等待执行", "processing"], querying: ["查询订单", "processing"],
@@ -384,7 +427,8 @@ async function api(path, options = {}) {
         } catch { throw new Error("无法恢复工作台连接，未保存内容仍在页面中，请保留页面稍后再试"); }
         throw new Error("工作台连接已更新，本次操作未执行。未保存内容已保留，请再次点击保存或操作按钮");
       }
-      if (path === "/api/rows" && response.status === 409 && !["registration_not_started", "gift_catalog_conflict", "gift_group_conflict"].includes(result.code)) conflict = true;
+      if (path === "/api/rows" && response.status === 409 && !["registration_not_started", "gift_catalog_conflict", "gift_group_conflict", "selection_conflict"].includes(result.code)) conflict = true;
+      if (result.code === "selection_conflict") { scopeInvalid = true; renderGroupFilter(); await refreshGiftCatalog(); }
       throw new Error(result.error || "请求失败，请检查连接和访问密码");
     }
     return result;
@@ -586,12 +630,7 @@ async function refreshGiftCatalog() {
   catalogRefreshing = (async () => {
     try {
       const result = await api("/api/gifts");
-      if (giftGroups.groups.length) {
-        const groups = await api("/api/gift-groups");
-        if (JSON.stringify(groups) !== JSON.stringify(giftGroups)) {
-          giftGroups = groups; renderGroupFilter(); if (pickerRowId) renderGiftOptions();
-        }
-      }
+      acceptCatalogContext(result);
       if (JSON.stringify(result.gifts) !== JSON.stringify(giftCatalog)) {
         giftCatalog = result.gifts;
         if (pickerRowId) renderGiftOptions();
@@ -607,13 +646,20 @@ function renderGiftOptions() {
   if (!row) return closeGiftPicker();
   const query = $("#gift-search").value.trim();
   const usage = pickerGiftUsage || recentGiftUsage();
-  const candidates = giftCatalog.map((gift, index) => ({ gift, index, count: usage.counts.get(gift.id) || 0, score: query ? giftScore(query, gift) : 1 }))
+  const candidates = scopedGifts().map((gift, index) => ({ gift, index, count: usage.counts.get(gift.id) || 0, score: query ? giftScore(query, gift) : 1 }))
     .filter(item => item.score >= .45 && inGiftGroup(item.gift.id, selectedGiftGroup)).sort((a, b) => b.score - a.score || b.count - a.count || a.index - b.index);
   $("#gift-sort-hint").textContent = usage.orderCount
     ? `${query ? "匹配优先 · " : ""}按近 ${usage.orderCount} 个订单的礼赠频率排序`
     : "暂无订单使用记录，按清单顺序显示";
   $("#gift-sort-hint").title = `统计当前表格末尾最近 ${recentGiftOrderLimit} 个有礼赠的不同订单；同一订单同一礼赠只计一次，同频保留原清单顺序。`;
   const list = $("#gift-options"); list.replaceChildren();
+  for (const id of row.gift_ids.filter(id => !candidates.some(item => item.gift.id === id))) {
+    const item = document.createElement("div"), remove = document.createElement("button");
+    item.className = "gift-existing"; item.append(document.createTextNode(`${giftNames([id])[0] || id} · ${id}（原已选）`));
+    remove.type = "button"; remove.textContent = "移除";
+    remove.addEventListener("click", () => { remember(); assignGifts(row, row.gift_ids.filter(code => code !== id), unresolvedGiftLabels(row)); updateGiftRow(row); renderGiftOptions(); });
+    item.append(remove); list.append(item);
+  }
   for (const { gift, count } of candidates) {
     const label = document.createElement("label"), check = document.createElement("input"), text = document.createElement("span"), code = document.createElement("small");
     label.className = "gift-option"; check.type = "checkbox"; check.value = gift.id; check.checked = row.gift_ids.includes(gift.id);
@@ -634,7 +680,7 @@ function renderGiftOptions() {
     }
     label.append(check, text, meta); list.append(label);
   }
-  if (!candidates.length) { const empty = document.createElement("p"); empty.className = "gift-no-results"; empty.textContent = "没有匹配选项，请尝试其他名称或别名"; list.append(empty); }
+  if (!candidates.length) { const empty = document.createElement("p"); empty.className = "gift-no-results"; empty.textContent = scopeInvalid ? "分组或目录已更新，请重新选择礼品分组" : "当前分组未找到，请切换分组"; list.append(empty); }
   const unmatched = unresolvedGiftLabels(row), notice = $("#gift-unmatched"); notice.replaceChildren(); notice.hidden = !unmatched.length;
   if (unmatched.length) {
     const text = document.createElement("span"), clear = document.createElement("button");
@@ -679,14 +725,15 @@ $("#gift-create-form").addEventListener("submit", async event => {
     const gift = { id: $("#gift-create-code").value.trim(), name: $("#gift-create-name").value.trim(),
       aliases: $("#gift-create-aliases").value.split(/[,，、;；\r\n]+/).map(value => value.trim()).filter(Boolean) };
     const result = await api("/api/gifts", { method: "POST", body: JSON.stringify(gift) });
-    giftCatalog = result.gifts;
+    giftCatalog = result.gifts; catalogVersion = result.catalog_version; persistScope();
     const row = $("#gift-create-select").checked && createGiftRowId ? rows.find(row => row.id === createGiftRowId) : null;
-    if (row) {
+    if (row && !scopeInvalid && inGiftGroup(result.gift.id, selectedGiftGroup)) {
       remember();
       const match = matchGifts(unresolvedGiftLabels(row).join("、"));
       assignGifts(row, [...row.gift_ids, ...match.ids, result.gift.id], match.unmatched); changed();
     }
     render(); $("#gift-create-dialog").close(); focusAfterGiftCreate(row?.id);
+    if (row && !row.gift_ids.includes(result.gift.id)) return toast("礼赠已新增；当前分组不包含此编码，请由主机分配分组后重新选择", true);
     toast(`已新增“${result.gift.name}”${row ? "，并选中到当前订单" : "，可在礼赠列表中选择"}`);
   } catch (reason) { error.textContent = reason.message; error.hidden = false; }
   finally {
@@ -722,44 +769,12 @@ function statusNode(row) {
   }
   return node;
 }
-function addressDetail(row, index) {
-  const detail = document.createElement("tr"), gutter = document.createElement("th"), cell = document.createElement("td");
-  detail.className = "address-details"; detail.dataset.forRow = row.id;
-  gutter.setAttribute("aria-hidden", "true"); gutter.textContent = "↳";
-  cell.colSpan = 4;
-  const panel = document.createElement("div"), heading = document.createElement("div"), grid = document.createElement("div");
-  panel.className = "address-panel"; heading.className = "address-panel-heading"; grid.className = "address-fields";
-  const title = document.createElement("strong"), hint = document.createElement("span");
-  title.textContent = "修改收件信息"; hint.textContent = "仅应用于本行订单"; heading.append(title, hint);
-  for (const field of addressFields) {
-    const wrapper = document.createElement("label"), label = document.createElement("span"), control = document.createElement("input");
-    wrapper.className = `address-field field-${field}`; wrapper.dataset.field = field;
-    label.textContent = fields[field].label;
-    control.type = "text"; control.value = row[field]; control.maxLength = fields[field].max; control.autocomplete = "off"; control.spellcheck = false;
-    control.placeholder = fields[field].placeholder; control.setAttribute("aria-label", `第 ${index + 2} 行 ${fields[field].label}`);
-    if (field === "phone") { control.inputMode = "tel"; control.className = "phone-input"; }
-    let recorded = false;
-    control.addEventListener("focus", () => { recorded = false; activate(row.id, field); });
-    control.addEventListener("input", () => {
-      if (!recorded) { remember(); recorded = true; }
-      row[field] = control.value; rowElement(row.id).querySelector('[data-field="status"]').replaceChildren(statusNode(row));
-      $("#formula-input").value = control.value; changed();
-    });
-    control.addEventListener("paste", handlePaste);
-    control.addEventListener("keydown", event => handleNavigation(event, row.id, field));
-    wrapper.addEventListener("pointerdown", () => activate(row.id, field));
-    wrapper.append(label, control); grid.append(wrapper);
-  }
-  panel.append(heading, grid); cell.append(panel); detail.append(gutter, cell);
-  return detail;
-}
 function render() {
   finishEditing();
   closeGiftPicker();
   displayedRows = rows.filter(row => !selectedStatus || status(row).type === selectedStatus);
   const displayedIds = new Set(displayedRows.map(row => row.id));
   const visible = columns();
-  $("#registry-grid").classList.toggle("address-mode", visible.length > 4);
   $("#grid-columns").replaceChildren();
   for (const field of ["row-number", ...visible]) {
     const col = document.createElement("col");
@@ -787,11 +802,9 @@ function render() {
     const heading = document.createElement("th");
     heading.scope = "col";
     heading.dataset.field = field;
-    if (addressFields.includes(field)) heading.className = "address-heading";
     const label = document.createElement("div");
     label.className = "column-label";
     label.textContent = fields[field].label;
-    if (field === "change_address") heading.title = "空心圆点为否，实心圆点为是";
     heading.append(label);
     if (field === "status") {
       const filter = document.createElement("select"); filter.id = "status-filter"; filter.setAttribute("aria-label", "按状态筛选");
@@ -832,29 +845,6 @@ function render() {
         cell.tabIndex = 0;
       } else if (field === "gift") {
         renderGiftCell(cell, row, index);
-      } else if (field === "change_address") {
-        // 本版本不支持改地址：已有草稿只允许从“是”关回“否”，不能再开启。
-        const locked = !row.change_address;
-        const toggle = document.createElement("button");
-        toggle.type = "button"; toggle.className = `address-toggle${row.change_address ? " is-yes" : ""}${locked ? " is-locked" : ""}`;
-        toggle.setAttribute("role", "checkbox"); toggle.setAttribute("aria-checked", String(row.change_address));
-        toggle.setAttribute("aria-disabled", String(locked));
-        toggle.setAttribute("aria-label", `第 ${index + 2} 行 是否改地址：${row.change_address ? "是" : "否"}${locked ? "（已禁用）" : ""}`);
-        toggle.title = locked ? "本版本暂不支持改地址，请保持“否”" : "是 · 点击关闭改地址（本版本不支持新地址）";
-        const dot = document.createElement("span"); dot.className = "address-dot"; dot.setAttribute("aria-hidden", "true"); toggle.append(dot);
-        toggle.addEventListener("focus", () => activate(row.id, field));
-        toggle.addEventListener("click", () => {
-          if (locked) return;
-          selectRange({ id: row.id, field }); remember(); row.change_address = false; changed(); render(); focusCell(row.id, field);
-        });
-        if (!locked) toggle.addEventListener("paste", handlePaste);
-        toggle.addEventListener("keydown", event => handleNavigation(event, row.id, field));
-        cell.append(toggle);
-      } else if (addressFields.includes(field) && !row.change_address) {
-        const dash = document.createElement("span");
-        dash.className = "inactive-value";
-        dash.textContent = "—";
-        cell.append(dash);
       } else {
         const control = document.createElement("input");
         control.setAttribute("aria-label", `第 ${index + 2} 行 ${fields[field].label}`);
@@ -866,9 +856,8 @@ function render() {
           control.maxLength = fields[field].max;
           control.value = row[field];
           control.readOnly = true;
-          if (index === 0 || addressFields.includes(field)) control.placeholder = fields[field].placeholder;
+          if (index === 0) control.placeholder = fields[field].placeholder;
           if (field === "order_no") control.className = "order-input";
-          if (field === "phone") { control.className = "phone-input"; control.inputMode = "tel"; }
           let recorded = false;
           control.addEventListener("focus", () => { recorded = false; });
           control.addEventListener("editstart", () => { recorded = false; });
@@ -881,7 +870,6 @@ function render() {
           });
           control.addEventListener("blur", () => { if (editing?.id === row.id && editing.field === field) finishEditing(); });
         }
-        if (addressFields.includes(field)) cell.classList.add("address-active");
         control.addEventListener("focus", () => activate(row.id, field));
         control.addEventListener("paste", handlePaste);
         control.addEventListener("keydown", (event) => handleNavigation(event, row.id, field));
@@ -891,7 +879,6 @@ function render() {
       tr.append(cell);
     }
     body.append(tr);
-    if (row.change_address) body.append(addressDetail(row, index));
   });
   $("#grid-body").replaceChildren(body);
   rowNodes = new Map([...$("#grid-body").children].filter(node => node.dataset.id).map(node => [node.dataset.id, node]));
@@ -899,7 +886,7 @@ function render() {
   if (selection && !rangeBounds()) selection = null;
   updateSummary();
   updateDuplicateOrders();
-  if (active && displayedIds.has(active.id)) activate(active.id, visible.includes(active.field) || (addressFields.includes(active.field) && rows.find(row => row.id === active.id).change_address) ? active.field : "order_no");
+  if (active && displayedIds.has(active.id)) activate(active.id, visible.includes(active.field) ? active.field : "order_no");
   else {
     active = null;
     selection = null;
@@ -914,7 +901,6 @@ function render() {
 }
 function rowElement(id) { return rowNodes.get(id); }
 function fieldElement(id, field) {
-  if (addressFields.includes(field)) return [...$("#grid-body").children].find(element => element.dataset.forRow === id)?.querySelector(`.address-field[data-field="${field}"]`);
   return rowElement(id)?.querySelector(`td[data-field="${field}"]`);
 }
 function rangeBounds() {
@@ -925,7 +911,8 @@ function rangeBounds() {
   return { top: Math.min(start, end), bottom: Math.max(start, end), left: Math.min(left, right), right: Math.max(left, right) };
 }
 function cellReference(row, column) { return `${String.fromCharCode(65 + column)}${row + 2}`; }
-function paintSelection() {
+function paintSelection(keepHandle = false) {
+  if (!keepHandle) document.querySelectorAll(".fill-handle").forEach(node => node.remove());
   for (const node of selectedNodes) {
     node.classList.remove("selected-cell", "range-top", "range-bottom", "range-left", "range-right", "selected-gutter");
     node.removeAttribute("aria-selected");
@@ -937,6 +924,13 @@ function paintSelection() {
   fieldElement(active.id, active.field)?.classList.add("active-cell");
   const bounds = rangeBounds();
   if (bounds) {
+    if (bounds.left < columns().indexOf("status") && !document.querySelector(".fill-handle")) {
+      const handle = document.createElement("button");
+      handle.type = "button"; handle.className = "fill-handle"; handle.tabIndex = -1;
+      handle.title = "向下拖动填充；双击填充至相邻列末行；Ctrl+D 向下填充选区";
+      handle.setAttribute("aria-label", "向下填充选区");
+      fieldElement(gridRows()[bounds.bottom].id, columns()[bounds.right])?.append(handle);
+    }
     for (let row = bounds.top; row <= bounds.bottom; row++) {
       const tr = rowElement(gridRows()[row].id);
       tr.firstElementChild.classList.add("selected-gutter"); selectedNodes.add(tr.firstElementChild);
@@ -979,8 +973,8 @@ function activate(id, field, keepSelection = false) {
   paintSelection();
   $("#delete-row").disabled = false;
   const row = rows[index];
-  $("#formula-input").disabled = field === "status" || (addressFields.includes(field) && !row.change_address);
-  $("#formula-input").value = field === "status" ? status(row).label : field === "change_address" ? (row.change_address ? "是" : "否") : row[field];
+  $("#formula-input").disabled = field === "status";
+  $("#formula-input").value = field === "status" ? status(row).label : row[field];
 }
 function scrollCellIntoView(id, field) {
   const cell = fieldElement(id, field);
@@ -1022,7 +1016,6 @@ function beginEditing(id, field, replace = false) {
   if (!row || field === "status") return;
   selectRange({ id, field }); focusCell(id, field, true);
   if (field === "gift") return openGiftPicker(row, cell.querySelector(".gift-trigger"));
-  if (field === "change_address") return cell.querySelector(".address-toggle").click();
   const input = cell.querySelector("input");
   if (!input) return;
   editing = { id, field, original: row[field] }; input.readOnly = false;
@@ -1076,6 +1069,7 @@ function scrollWhileSelecting() {
   dragFrame = requestAnimationFrame(scrollWhileSelecting);
 }
 $("#registry-grid").addEventListener("pointerdown", event => {
+  if (event.target.closest(".fill-handle")) return;
   if (!initialized || event.button !== 0 || event.target.closest(".column-resizer,select")) return;
   const header = event.target.closest("thead th");
   if (header) {
@@ -1124,6 +1118,9 @@ $("#registry-grid").addEventListener("dblclick", event => {
 $("#registry-grid").addEventListener("keydown", event => {
   if (!active || !columns().includes(active.field) || event.target.closest(".column-resizer,.address-details,select") || event.isComposing) return;
   const modifier = event.ctrlKey || event.metaKey;
+  if (modifier && event.key.toLowerCase() === "d" && !editing) {
+    event.preventDefault(); event.stopPropagation(); fillSelectedDown(); return;
+  }
   if (modifier && event.key.toLowerCase() === "a" && !editing) {
     event.preventDefault(); event.stopPropagation(); closeGiftPicker();
     selectRange({ id: gridRows()[0].id, field: "order_no" }, { id: gridRows().at(-1).id, field: "status" });
@@ -1148,11 +1145,11 @@ $("#registry-grid").addEventListener("keydown", event => {
     let row = gridRows().findIndex(item => item.id === origin.id), col = columns().indexOf(origin.field);
     if (event.key in arrows) { row += arrows[event.key][0]; col += arrows[event.key][1]; }
     if (event.key === "Enter") row += event.shiftKey ? -1 : 1;
-    if (event.key === "Tab") { col += event.shiftKey ? -1 : 1; if (col > 3) { row++; col = 0; } if (col < 0 && row > 0) { row--; col = 3; } }
+    if (event.key === "Tab") { col += event.shiftKey ? -1 : 1; if (col >= columns().length) { row++; col = 0; } if (col < 0 && row > 0) { row--; col = columns().length - 1; } }
     if (event.key === "Home") { col = 0; if (modifier) row = 0; }
-    if (event.key === "End") { col = 3; if (modifier) row = gridRows().length - 1; }
+    if (event.key === "End") { col = columns().length - 1; if (modifier) row = gridRows().length - 1; }
     if (!selectedStatus && row >= gridRows().length && ["Tab", "Enter"].includes(event.key) && rows.length < 10000) { remember(); rows.push(newRow()); changed(); render(); }
-    row = Math.max(0, Math.min(gridRows().length - 1, row)); col = Math.max(0, Math.min(3, col));
+    row = Math.max(0, Math.min(gridRows().length - 1, row)); col = Math.max(0, Math.min(columns().length - 1, col));
     const point = { id: gridRows()[row].id, field: columns()[col] };
     if (extending) { selectRange(selection?.anchor || active, point); focusCell(active.id, active.field, true); scrollCellIntoView(point.id, point.field); }
     else focusCell(point.id, point.field);
@@ -1163,8 +1160,7 @@ $("#registry-grid").addEventListener("keydown", event => {
     else if (active.field === "gift") {
       event.preventDefault(); event.stopPropagation(); beginEditing(active.id, active.field);
       if (event.key.trim()) { $("#gift-search").value = event.key; renderGiftOptions(); }
-    } else if (active.field === "change_address" && event.key === " ") {
-      event.preventDefault(); event.stopPropagation(); beginEditing(active.id, active.field);
+
     }
   }
 }, true);
@@ -1175,7 +1171,7 @@ function handleNavigation(event, id, field) {
     event.preventDefault();
     const next = index + ((event.key === "ArrowUp" || (event.key === "Enter" && event.shiftKey)) ? -1 : 1);
     if (!selectedStatus && next >= gridRows().length && rows.length < 10000) { remember(); rows.push(newRow()); changed(); render(); }
-    if (next >= 0 && next < gridRows().length) focusCell(gridRows()[next].id, addressFields.includes(field) && !gridRows()[next].change_address ? "order_no" : field);
+    if (next >= 0 && next < gridRows().length) focusCell(gridRows()[next].id, field);
   }
 }
 function parseTSV(text) {
@@ -1198,7 +1194,7 @@ function selectionMatrix() {
   const bounds = rangeBounds();
   if (!bounds) return null;
   return gridRows().slice(bounds.top, bounds.bottom + 1).map(row => columns().slice(bounds.left, bounds.right + 1).map(field =>
-    field === "status" ? status(row).label : field === "change_address" ? (row.change_address ? "是" : "否") : row[field]));
+    field === "status" ? status(row).label : row[field]));
 }
 function clipboardContent() {
   const matrix = selectionMatrix();
@@ -1237,7 +1233,7 @@ function structuredClipboard(data) {
   } catch { return null; }
 }
 function textEditingTarget(target) {
-  return target?.closest?.("#formula-input,#gift-picker,.address-field") || (target?.tagName === "INPUT" && !target.readOnly);
+  return target?.closest?.("#formula-input,#gift-picker") || (target?.tagName === "INPUT" && !target.readOnly);
 }
 function markCopied() { $("#registry-grid").classList.add("is-copied"); toast("已复制选中区域，可粘贴到 Excel 或其他单元格"); }
 document.addEventListener("copy", event => {
@@ -1264,24 +1260,143 @@ async function copySelectedRange() {
     finally { forceRangeCopy = false; }
   }
 }
+let fillDrag = null, fillFrame = null;
+function fillPlan(bounds) {
+  return {bounds: {...bounds}, version, scope: JSON.stringify(currentScope()),
+    visibleIds: gridRows().map(row => row.id), filtered: Boolean(selectedStatus),
+    source: structuredClone(gridRows().slice(bounds.top, bounds.bottom + 1))};
+}
+function applyFill(plan, end) {
+  const {bounds, source, visibleIds} = plan;
+  if (end <= bounds.bottom) return;
+  try {
+    if (plan.version !== version || plan.scope !== JSON.stringify(currentScope()) ||
+        JSON.stringify(visibleIds) !== JSON.stringify(gridRows().map(row => row.id))) throw new Error("填充期间表格或目录已变化，请重新选择");
+    if (end >= 10000 || (plan.filtered && end >= visibleIds.length)) throw new Error("填充超出当前可用行，请先清除筛选或减少范围");
+    const extra = Math.max(0, end + 1 - visibleIds.length);
+    if (rows.length + extra > 10000) throw new Error("填充后将超过 10000 行");
+    const updated = structuredClone(rows), targets = [];
+    for (let index = bounds.bottom + 1; index <= end; index++) {
+      let target = index < visibleIds.length ? updated.findIndex(row => row.id === visibleIds[index]) : updated.length;
+      if (target === updated.length) updated.push(newRow());
+      const original = source[(index - bounds.bottom - 1) % source.length], row = updated[target];
+      for (let col = bounds.left; col <= bounds.right; col++) {
+        const field = columns()[col];
+        if (field === "gift") {
+          const ids = original.gift_ids || [];
+          ensureGiftScope(ids);
+          assignGifts(row, ids, unresolvedGiftLabels(original));
+        } else if (field === "order_no") row.order_no = original.order_no.trim();
+      }
+      targets.push(row);
+    }
+    if (JSON.stringify(updated) === JSON.stringify(rows)) return;
+    remember(); rows = updated; changed();
+    selection = {anchor: {id: visibleIds[bounds.top], field: columns()[bounds.left]},
+      focus: {id: targets.at(-1).id, field: columns()[bounds.right]}};
+    active = selection.anchor;
+    render(); focusCell(active.id, active.field, true);
+    toast("已向下填充 " + targets.length + " 行，单元格内容按原文复制，可按 Ctrl+Z 撤销");
+  } catch (error) { toast(error.message, true); }
+}
+function fillSelectedDown() {
+  const bounds = rangeBounds();
+  if (!bounds || bounds.bottom <= bounds.top) return toast("请先选中来源行和下方要填充的区域");
+  if (columns()[bounds.left] === "status") return toast("状态由登记结果更新，不能填充");
+  finishEditing(); closeGiftPicker();
+  applyFill(fillPlan({...bounds, bottom: bounds.top}), bounds.bottom);
+}
+function previewFill() {
+  if (!fillDrag) return;
+  document.querySelectorAll(".fill-preview").forEach(node => node.classList.remove("fill-preview"));
+  const point = pointAt(fillDrag.x, fillDrag.y);
+  let end = point ? gridRows().findIndex(row => row.id === point.id) : fillDrag.plan.bounds.bottom;
+  const last = rowElement(gridRows().at(-1)?.id)?.getBoundingClientRect();
+  const rect = $("#grid-scroll").getBoundingClientRect();
+  if (!fillDrag.plan.filtered && last && fillDrag.y > last.bottom && last.bottom < rect.bottom) {
+    end = gridRows().length - 1 + Math.max(1, Math.ceil((Math.min(fillDrag.y, rect.bottom - 2) - last.bottom) / Math.max(24, last.height)));
+  }
+  fillDrag.end = Math.min(9999, Math.max(fillDrag.plan.bounds.bottom, end));
+  const {bounds} = fillDrag.plan;
+  for (let row = bounds.bottom + 1; row <= Math.min(fillDrag.end, gridRows().length - 1); row++) {
+    for (let col = bounds.left; col <= bounds.right; col++) {
+      if (columns()[col] !== "status") fieldElement(gridRows()[row].id, columns()[col])?.classList.add("fill-preview");
+    }
+  }
+  $("#selection-summary").textContent = "向下填充 " + (fillDrag.end - bounds.bottom) + " 行 · 松开应用，Esc 取消";
+}
+function scrollWhileFilling() {
+  if (!fillDrag) { fillFrame = null; return; }
+  const grid = $("#grid-scroll"), rect = grid.getBoundingClientRect();
+  const lower = rect.bottom - 20, upper = rect.top + $("#grid-head").offsetHeight + 20;
+  if (fillDrag.y > lower) grid.scrollTop += Math.min(28, (fillDrag.y - lower) / 2);
+  if (fillDrag.y < upper) grid.scrollTop -= Math.min(28, (upper - fillDrag.y) / 2);
+  previewFill(); fillFrame = requestAnimationFrame(scrollWhileFilling);
+}
+function stopFilling(commit = false) {
+  if (!fillDrag) return;
+  const drag = fillDrag; fillDrag = null;
+  if (fillFrame !== null) cancelAnimationFrame(fillFrame);
+  fillFrame = null; document.body.classList.remove("range-filling");
+  document.querySelectorAll(".fill-preview").forEach(node => node.classList.remove("fill-preview"));
+  if (commit) applyFill(drag.plan, drag.end);
+  paintSelection(drag.end === drag.plan.bounds.bottom);
+  setTimeout(() => { suppressCellClick = false; }, 0);
+}
+$("#registry-grid").addEventListener("pointerdown", event => {
+  if (!event.target.closest(".fill-handle") || event.button !== 0) return;
+  event.preventDefault(); event.stopPropagation(); finishEditing(); closeGiftPicker();
+  const bounds = rangeBounds(); if (!bounds) return;
+  suppressCellClick = true;
+  fillDrag = {pointerId: event.pointerId, x: event.clientX, y: event.clientY, end: bounds.bottom, plan: fillPlan(bounds)};
+  document.body.classList.add("range-filling"); fillFrame = requestAnimationFrame(scrollWhileFilling);
+}, true);
+document.addEventListener("pointermove", event => {
+  if (fillDrag?.pointerId !== event.pointerId) return;
+  event.preventDefault(); fillDrag.x = event.clientX; fillDrag.y = event.clientY; previewFill();
+});
+document.addEventListener("pointerup", event => { if (fillDrag?.pointerId === event.pointerId) stopFilling(true); });
+document.addEventListener("pointercancel", event => { if (fillDrag?.pointerId === event.pointerId) stopFilling(); });
+window.addEventListener("blur", () => stopFilling());
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && fillDrag) { event.preventDefault(); event.stopImmediatePropagation(); stopFilling(); }
+}, true);
+$("#registry-grid").addEventListener("dblclick", event => {
+  if (!event.target.closest(".fill-handle")) return;
+  event.preventDefault(); event.stopPropagation();
+  const bounds = rangeBounds(); if (!bounds) return;
+  const adjacent = columns().filter((field, index) => field !== "status" && (index < bounds.left || index > bounds.right));
+  let end = bounds.bottom;
+  while (end + 1 < gridRows().length && adjacent.some(field => Boolean(gridRows()[end + 1][field]?.trim()))) end++;
+  if (end === bounds.bottom) return toast("相邻列没有连续内容，请拖动填充柄指定范围");
+  applyFill(fillPlan(bounds), end);
+}, true);
 function asBoolean(value) {
   const normalized = value.trim().toLowerCase();
   if (["是", "true", "1", "yes"].includes(normalized)) return true;
   if (["否", "false", "0", "no", ""].includes(normalized)) return false;
-  throw new Error("“是否改地址”请填写“是”或“否”");
+  throw new Error("旧复制格式的地址标志无效，未粘贴");
 }
 function pasteText(text, clipboardMatrix = null) {
   if (!initialized) return;
   finishEditing(); closeGiftPicker();
-  const matrix = clipboardMatrix || parseTSV(text);
+  let matrix = clipboardMatrix || parseTSV(text);
   if (matrix[0]?.[0]?.trim() === "订单号" && ["礼品", "礼赠", "赠品"].includes(matrix[0]?.[1]?.trim())) { matrix.shift(); matrix.giftIds?.shift(); }
   if (!matrix.length) return;
   const bounds = rangeBounds();
   const start = bounds?.top ?? (active ? Math.max(0, gridRows().findIndex(row => row.id === active.id)) : 0);
   const visible = columns();
+  const originalWidth = Math.max(...matrix.map(line => line.length));
+  const legacy = [4, 7].includes(originalWidth) && (!bounds || bounds.left === 0) && (!active || active.field === "order_no");
+  if (legacy) {
+    try { if (matrix.some(line => asBoolean(line[2] || ""))) return toast("旧复制内容包含不支持的改地址请求，本次未粘贴；请核对原意", true); }
+    catch (error) { return toast(error.message, true); }
+    const giftIds = matrix.giftIds;
+    matrix = matrix.map(line => [line[0], line[1], line[originalWidth - 1] || ""]);
+    if (giftIds) matrix.giftIds = giftIds.map(line => [line?.[0], line?.[1], null]);
+  }
   const sourceWidth = Math.max(...matrix.map(line => line.length));
-  const legacy = sourceWidth === 7 && (!bounds || bounds.left === 0) && (!active || active.field === "order_no");
-  const mapping = legacy || addressFields.includes(active?.field) ? Object.keys(fields) : visible;
+  const mapping = visible;
   const colStart = mapping === visible ? bounds?.left ?? Math.max(0, visible.indexOf(active?.field)) : Math.max(0, mapping.indexOf(active?.field));
   if (sourceWidth > mapping.length - colStart) return toast("粘贴的列数超出表格范围，请重新选择起始单元格", true);
   let height = matrix.length, width = sourceWidth;
@@ -1304,10 +1419,9 @@ function pasteText(text, clipboardMatrix = null) {
         const raw = matrix[offset % matrix.length][column % sourceWidth] ?? "";
         const value = field === "order_no" ? raw.trim() : raw;
         if (!field || field === "status") continue;
-        if (field === "change_address") updated[target][field] = asBoolean(value);
-        else if (field === "gift") {
+        if (field === "gift") {
           const codes = matrix.giftIds?.[offset % matrix.length]?.[column % sourceWidth];
-          if (Array.isArray(codes) && codes.length && codes.every(id => typeof id === "string" && giftCatalog.some(gift => gift.id === id))) assignGifts(updated[target], codes);
+          if (Array.isArray(codes) && codes.length) { ensureGiftScope(codes); assignGifts(updated[target], codes); }
           else { const match = matchGifts(value); assignGifts(updated[target], match.ids, match.unmatched); }
           if (updated[target].gift.length > fields.gift.max) throw new Error("礼品内容过长，请减少单行礼品数量");
         }
@@ -1318,7 +1432,7 @@ function pasteText(text, clipboardMatrix = null) {
       }
     }
     remember(); rows = updated; changed();
-    if (mapping === visible || legacy) selection = { anchor: { id: rows[targets[0]].id, field: visible[legacy ? 0 : colStart] }, focus: { id: rows[targets.at(-1)].id, field: visible[legacy ? 3 : colStart + width - 1] } };
+    if (mapping === visible || legacy) selection = { anchor: { id: rows[targets[0]].id, field: visible[legacy ? 0 : colStart] }, focus: { id: rows[targets.at(-1)].id, field: visible[Math.min(visible.length - 1, colStart + width - 1)] } };
     active = selection?.anchor || { id: rows[targets[0]].id, field: mapping[colStart] };
     render(); if (active) focusCell(active.id, active.field, true);
     const unmatched = targets.map(index => updated[index]).filter(row => row.gift && !validGifts(row)).length;
@@ -1328,8 +1442,7 @@ function pasteText(text, clipboardMatrix = null) {
 function handlePaste(event) {
   if (event.defaultPrevented || !event.clipboardData) return;
   const text = event.clipboardData.getData("text/plain");
-  const addressBlock = event.target.closest?.(".address-field") && /[\t\r\n]/.test(text);
-  if (textEditingTarget(event.target) && !addressBlock) return;
+  if (textEditingTarget(event.target)) return;
   if (!event.clipboardData.types.includes("text/plain") && !event.clipboardData.types.includes("text/html")) return;
   event.preventDefault(); pasteText(text, structuredClipboard(event.clipboardData));
 }
@@ -1337,7 +1450,7 @@ $("#registry-grid").addEventListener("paste", handlePaste);
 function clearSelectedCells() {
   const bounds = rangeBounds();
   if (!bounds) return;
-  if (bounds.left === 3) return toast("状态列由登记结果自动更新，不能手动清空");
+  if (columns()[bounds.left] === "status") return toast("状态列由登记结果自动更新，不能手动清空");
   finishEditing(); closeGiftPicker();
   const updated = structuredClone(rows);
   for (let index = bounds.top; index <= bounds.bottom; index++) {
@@ -1345,7 +1458,6 @@ function clearSelectedCells() {
     for (let col = bounds.left; col <= bounds.right; col++) {
       const field = columns()[col];
       if (field === "gift") assignGifts(updated[target], []);
-      else if (field === "change_address") updated[target][field] = false;
       else if (field !== "status") updated[target][field] = "";
     }
   }
@@ -1400,7 +1512,7 @@ function formulaHasChanges() {
   if (!formulaEditing() || !active) return false;
   const row = rows.find(row => row.id === active.id);
   if (!row) return false;
-  const original = active.field === "change_address" ? (row.change_address ? "是" : "否") : row[active.field];
+  const original = row[active.field];
   return $("#formula-input").value !== String(original ?? "");
 }
 function draftSyncAllowed() { return !hostManaging && !editing && !pickerRowId && !formulaEditing() && !document.querySelector("dialog[open]"); }
@@ -1409,8 +1521,8 @@ $("#formula-input").addEventListener("change", () => {
   const row = rows.find(row => row.id === active.id), field = active.field, value = $("#formula-input").value;
   if (!row || field === "status") return;
   try {
-    const next = field === "change_address" ? asBoolean(value) : field === "order_no" ? value.trim() : value;
-    if (field !== "change_address" && next.length > fields[field].max) throw new Error("单元格内容过长");
+    const next = field === "order_no" ? value.trim() : value;
+    if (next.length > fields[field].max) throw new Error("单元格内容过长");
     if (field === "order_no") $("#formula-input").value = next;
     if (next === row[field]) return;
     remember();
@@ -1440,8 +1552,8 @@ $("#start-registration").addEventListener("click", async () => {
   if (starting) return;
   const nonempty = rows.filter(filled);
   if (!nonempty.length) return toast("请先填写订单号并选择礼品", true);
-  const incomplete = rows.findIndex(row => filled(row) && !(row.order_no.trim() && validGifts(row) && (!row.change_address || addressFields.every(field => row[field].trim()))));
-  if (incomplete >= 0) { toast(`请先完善第 ${incomplete + 2} 行的订单号、礼品及收件信息`, true); focusCell(rows[incomplete].id, !rows[incomplete].order_no.trim() ? "order_no" : !validGifts(rows[incomplete]) ? "gift" : "recipient_name"); return; }
+  const incomplete = rows.findIndex(row => filled(row) && !(row.order_no.trim() && validGifts(row) && !row.change_address));
+  if (incomplete >= 0) { toast(`请先完善第 ${incomplete + 2} 行的订单号、礼品；旧地址请求需核对原意后删除并新建`, true); focusCell(rows[incomplete].id, !rows[incomplete].order_no.trim() ? "order_no" : !validGifts(rows[incomplete]) ? "gift" : "gift"); return; }
   starting = true; const button = $("#start-registration"); button.disabled = true;
   try {
     if (!(await saveNow())) return;
@@ -1469,10 +1581,11 @@ document.addEventListener("keydown", event => {
 document.addEventListener("visibilitychange", () => { if (document.hidden && initialized) saveNow(); });
 window.addEventListener("beforeunload", event => { if (version !== savedVersion || formulaHasChanges()) { event.preventDefault(); event.returnValue = ""; } });
 async function refreshExecutionStates() {
+  const epoch = stateEpoch, sequence = ++pollSequence;
   try {
     if (initialized) {
-      const epoch = stateEpoch;
       const result = await api("/api/registrations/status");
+      if (sequence !== pollSequence || epoch !== stateEpoch) return;
       document.getElementById("connection-notice").hidden = true;
       document.getElementById("shutdown-notice").hidden = !result.server_stopping;
       if (epoch !== stateEpoch || hostManaging || starting || retrySubmitting) return;
@@ -1480,7 +1593,7 @@ async function refreshExecutionStates() {
       if (Number.isInteger(result.draft_revision) && result.draft_revision > revision && !saving) {
         if (version === savedVersion && draftSyncAllowed()) {
           const remoteDraft = await api("/api/rows");
-          if (epoch !== stateEpoch) return;
+          if (epoch !== stateEpoch || sequence !== pollSequence) return;
           // HTTP 等待期间可能又开始编辑，不能用后台清理结果覆盖新的输入。
           if (remoteDraft.revision > revision && version === savedVersion && !saving && draftSyncAllowed()) {
             revision = remoteDraft.revision; rows = remoteDraft.rows.length ? remoteDraft.rows : [newRow()];
@@ -1501,7 +1614,7 @@ async function refreshExecutionStates() {
     }
   } catch {
     // 保留最后已知结果；恢复连接只读状态，永不发起登记请求。
-    document.getElementById("connection-notice").hidden = false;
+    if (epoch === stateEpoch && sequence === pollSequence) document.getElementById("connection-notice").hidden = false;
   }
   finally { setTimeout(refreshExecutionStates, document.hidden ? 5000 : 1500); }
 }
@@ -1518,8 +1631,12 @@ function groupSelectOptions(select, value) {
   select.value = [...select.options].some(option => option.value === value) ? value : "";
 }
 function renderGroupFilter() {
-  groupSelectOptions($("#gift-group-filter"), selectedGiftGroup);
-  selectedGiftGroup = $("#gift-group-filter").value;
+  for (const select of [$("#toolbar-gift-group"), $("#gift-group-filter")]) {
+    groupSelectOptions(select, selectedGiftGroup);
+    select.options[0].text = "全部礼品（未限定）";
+    if (scopeInvalid) { select.add(new Option("分组已变更，请重新选择", "__invalid")); select.value = "__invalid"; }
+  }
+  $("#gift-scope-notice").hidden = !scopeInvalid;
 }
 function groupManagerGifts() {
   const query = normalizeGift($("#group-gift-search").value);
@@ -1556,7 +1673,7 @@ async function openGroupManager() {
   closeGiftPicker(); groupSelection.clear(); $("#group-error").textContent = "";
   try {
     const [catalog, groups] = await Promise.all([api("/api/gifts"), api("/api/gift-groups")]);
-    giftCatalog = catalog.gifts; giftGroups = groups;
+    giftCatalog = catalog.gifts; acceptCatalogContext({...catalog, gift_groups: groups});
     groupSelectOptions($("#group-manage-filter"), ""); $("#group-gift-search").value = "";
     renderGroupTargets(); renderGroupManagerList(); renderGroupFilter(); $("#groups-dialog").showModal();
   } catch (error) { toast(error.message, true); }
@@ -1565,14 +1682,19 @@ async function updateGroups(update) {
   if (groupsSaving) return;
   groupsSaving = true; $("#create-group").disabled = true; updateGroupCount(); $("#group-error").textContent = "";
   try {
-    giftGroups = await api("/api/gift-groups", { method: "PUT", body: JSON.stringify({ revision: giftGroups.revision, ...update }) });
+    const updatedGroups = await api("/api/gift-groups", { method: "PUT", body: JSON.stringify({ revision: giftGroups.revision, ...update }) });
+    acceptCatalogContext({catalog_version: catalogVersion, gift_groups: updatedGroups});
     groupSelectOptions($("#group-manage-filter"), $("#group-manage-filter").value);
     renderGroupTargets(); renderGroupManagerList(); renderGroupFilter();
     $("#new-group-name").value = ""; toast("礼品分组已保存");
   } catch (error) { $("#group-error").textContent = error.message; }
   finally { groupsSaving = false; $("#create-group").disabled = false; updateGroupCount(); }
 }
-$("#gift-group-filter").addEventListener("change", event => { selectedGiftGroup = event.target.value; renderGiftOptions(); });
+for (const id of ["#toolbar-gift-group", "#gift-group-filter"]) $(id).addEventListener("change", event => {
+  if (event.target.value === "__invalid") return;
+  selectedGiftGroup = event.target.value; scopeInvalid = false; persistScope(); giftMatcher = null;
+  renderGroupFilter(); if (pickerRowId) renderGiftOptions();
+});
 $("#manage-groups").addEventListener("click", openGroupManager);
 $("#picker-manage-groups").addEventListener("click", openGroupManager);
 $("#groups-close").addEventListener("click", () => $("#groups-dialog").close());
@@ -1795,14 +1917,14 @@ $("#network-ack").addEventListener("click", async () => {
   buttons.forEach(button => { button.disabled = true; });
   try {
     const config = await api("/api/config"); token = config.token; giftCatalog = config.gifts || []; catalogEditable = config.frontend_version >= 4;
-    giftGroups = config.gift_groups || giftGroups; renderGroupFilter();
+    giftGroups = config.gift_groups || giftGroups; catalogVersion = config.catalog_version || ""; restoreScope(); renderGroupFilter();
     hostActionsAvailable = config.host_actions_available === true;
     $("#picker-manage-groups").hidden = !hostActionsAvailable;
     if (!giftCatalog.length) throw new Error("未配置礼品选项，请重启工作台");
     const document = await api("/api/rows"); revision = document.revision; rowStates = document.row_states || {};
     rows = document.rows.length ? document.rows : Array.from({ length: 18 }, newRow);
     const before = JSON.stringify(rows);
-    rows.forEach(row => { if (!validGifts(row)) { const match = matchGifts(unresolvedGiftLabels(row).join("、")); assignGifts(row, [...(row.gift_ids || []), ...match.ids], match.unmatched); } });
+    // Shared drafts keep confirmed codes and unresolved text; loading never reinterprets them with this device's scope.
     initialized = true;
     $("#host-actions").hidden = config.host_actions_available !== true;
     $("#retry-failures").hidden = !hostActionsAvailable;

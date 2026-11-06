@@ -5,7 +5,7 @@ import json
 import uuid
 from copy import deepcopy
 
-from .registration import now, row_signature, task_key
+from .registration import now, row_signature, legacy_row_signature, task_key
 from .sessions import atomic_write
 
 
@@ -34,6 +34,7 @@ class HostManagement:
             for path in self.jobs._paths():
                 for row in self.jobs._load(path)["rows"]:
                     signatures[self._digest(row_signature(row))] = task_key(row)
+                    signatures[self._digest(legacy_row_signature(row))] = task_key(row)
         result = {}
         for mark in marks:
             key = mark.get("task_key") or signatures.get(mark["signature"])
@@ -51,7 +52,9 @@ class HostManagement:
                 mark = marks.get(identifier, {})
                 if task_mark.get("status") == "success":
                     mark = task_mark
-                elif mark.get("signature") != self._digest(state["signature"]) or mark.get("status") == "success":
+                elif (mark.get("status") == "success" or
+                      (mark.get("signature") != self._digest(state["signature"]) and
+                       not (task_mark.get('row_id') == identifier and task_mark == mark))):
                     continue
                 if mark.get("status") and state["state"] in {"success", "failed", "skipped"}:
                     state["manual_status"] = mark["status"]
