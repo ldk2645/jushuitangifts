@@ -212,7 +212,11 @@ function resolveGiftPart(text, strict = false) {
     const matches = context.entries.map(({ gift, labels }) => {
       // 跨空格的短语必须整体相似，不能只因包含一个已知简称就吞掉其他礼品。
       const meaningful = value.length >= 3 || labels.some(label => Math.min(value.length, label.length) / Math.max(value.length, label.length, 1) >= .5);
-      const score = strict ? Math.max(0, ...labels.map(label => Math.min(value.length, label.length) / Math.max(value.length, label.length, 1) >= .8 ? similarity(value, label) * .9 : 0)) : meaningful ? giftScore(text, gift) : 0;
+      const score = strict ? Math.max(0, ...labels.map(label => {
+        const coverage = Math.min(value.length, label.length) / Math.max(value.length, label.length, 1);
+        if (value.length >= 3 && coverage >= .65 && label.includes(value)) return giftLabelScore(value, label);
+        return coverage >= .8 ? similarity(value, label) * .9 : 0;
+      })) : meaningful ? giftScore(text, gift) : 0;
       return { id: gift.id, score };
     }).sort((a, b) => b.score - a.score);
     const best = matches[0], next = matches[1];
@@ -870,7 +874,7 @@ function render() {
           control.addEventListener("editstart", () => { recorded = false; });
           control.addEventListener("input", () => {
             if (!recorded) { remember(); recorded = true; }
-            row[field] = control.value;
+            row[field] = field === "order_no" ? control.value.trim() : control.value;
             tr.querySelector('[data-field="status"]').replaceChildren(statusNode(row));
             $("#formula-input").value = control.value;
             changed();
@@ -1000,8 +1004,12 @@ function finishEditing(cancel = false) {
   const current = editing; editing = null;
   const input = fieldElement(current.id, current.field)?.querySelector("input");
   if (input) { input.readOnly = true; input.closest("td")?.classList.remove("is-editing"); }
+  const row = rows.find(row => row.id === current.id);
+  if (input && row && current.field === "order_no") {
+    input.value = cancel ? current.original : row.order_no;
+    if (active?.id === current.id && active.field === current.field) $("#formula-input").value = input.value;
+  }
   if (cancel) {
-    const row = rows.find(row => row.id === current.id);
     if (row && row[current.field] !== current.original) {
       row[current.field] = current.original; if (input) input.value = current.original;
       rowElement(row.id)?.querySelector('[data-field="status"]').replaceChildren(statusNode(row));
@@ -1292,8 +1300,9 @@ function pasteText(text, clipboardMatrix = null) {
       const target = targets[offset];
       while (updated.length <= target) updated.push(newRow());
       for (let column = 0; column < width; column++) {
-        const value = matrix[offset % matrix.length][column % sourceWidth] ?? "";
         const field = mapping[colStart + column];
+        const raw = matrix[offset % matrix.length][column % sourceWidth] ?? "";
+        const value = field === "order_no" ? raw.trim() : raw;
         if (!field || field === "status") continue;
         if (field === "change_address") updated[target][field] = asBoolean(value);
         else if (field === "gift") {
@@ -1400,8 +1409,9 @@ $("#formula-input").addEventListener("change", () => {
   const row = rows.find(row => row.id === active.id), field = active.field, value = $("#formula-input").value;
   if (!row || field === "status") return;
   try {
-    const next = field === "change_address" ? asBoolean(value) : value;
-    if (field !== "change_address" && value.length > fields[field].max) throw new Error("单元格内容过长");
+    const next = field === "change_address" ? asBoolean(value) : field === "order_no" ? value.trim() : value;
+    if (field !== "change_address" && next.length > fields[field].max) throw new Error("单元格内容过长");
+    if (field === "order_no") $("#formula-input").value = next;
     if (next === row[field]) return;
     remember();
     if (field === "gift") { const match = matchGifts(value); assignGifts(row, match.ids, match.unmatched); }
