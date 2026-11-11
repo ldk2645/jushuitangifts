@@ -20,8 +20,8 @@ from .queue_metrics import MeasuredQueue, MeasuredRLock
 from .workflow import (PlatformOperationError, Workflow, GiftRecord, OrderSnapshot, SubmissionReceipt,
                        request_from_row, validate_snapshot, validate_receipt, verify_new_records, verify_added_records)
 
-TERMINAL = {"success", "failed", "skipped", "cancelled"}
-ACTIVE = {"queued", "querying", "submitting", "verifying"}
+TERMINAL = {"success", "failed", "skipped", "cancelled", "manual_required"}
+ACTIVE = {"queued", "querying", "submitting", "verifying", "verification_pending"}
 REVIEW_DELAY_SECONDS = 180
 
 
@@ -151,7 +151,7 @@ def registration_rows(rows, gifts):
 
 
 class RegistrationQueue(RetryBatches, JobStorage):
-    def __init__(self, directory, operations=None):
+    def __init__(self, directory, operations=None, *, dual_verification=None, verification_operations=None):
         self.directory = Path(directory)
         self.lock = MeasuredRLock()
         self.pending = MeasuredQueue()
@@ -164,9 +164,25 @@ class RegistrationQueue(RetryBatches, JobStorage):
         self._result_index, self._unknown_index, self._index_ready = {}, {}, False
         self._closed = False
         self._stopping = False
+        self.changed = threading.Event()
+        self._order_holds = {}
+        self.dual_verification = (os.environ.get('GIFT_DUAL_VERIFICATION', '0') == '1'
+                                  if dual_verification is None else bool(dual_verification))
+        self.verification = None
         self._directory_lock = _QueueDirectoryLock(self.directory)
         try:
             self.operations = operations if operations is not None else SeleniumOperations()
+            from .verification_lane import VerificationLane
+            if self.dual_verification:
+                from .review_browser import ReadOnlyVerification
+                verifier = verification_operations if verification_operations is not None else ReadOnlyVerification()
+                if verifier is self.operations:
+                    raise ValueError('登记与核验必须使用独立适配器')
+                self.verification = VerificationLane(self, verifier)
+            else:
+                # Recovery uses the same serialized worker when the flag is off.
+                self.verification = VerificationLane(self, self.operations)
+            self.verification.recover()
             self._recover_interrupted()
             # 复核只执行一次；中断后即使不能确认是否已查询，也不重新派发。
             for path in (self.directory / "auto_reviews").glob("*.json"):
@@ -182,6 +198,20 @@ class RegistrationQueue(RetryBatches, JobStorage):
                         record.update(status="interrupted", detail="自动复核中断，未重复查询或提交")
                     atomic_write(path, json.dumps(record, ensure_ascii=False).encode("utf-8"))
             self._restore_retry_batches()
+            for path in self._paths():
+                job = self._load(path)
+                for row, item in zip(job['rows'], job['items']):
+                    self._update_order_hold(path, row, item)
+            ready = [p for p, r in self.verification.records() if r['status'] == 'ready']
+            if ready:
+                if self.dual_verification:
+                    self.verification.wake()
+                else:
+                    for p in ready:
+                        self.pending.put(('initial:'+p.stem, p))
+                    if self.worker is None or not self.worker.is_alive():
+                        self.worker = threading.Thread(target=self._work, name='registration-worker', daemon=True)
+                        self.worker.start()
         except BaseException:
             self._directory_lock.close()
             raise
@@ -193,6 +223,10 @@ class RegistrationQueue(RetryBatches, JobStorage):
 
     def close(self):
         """仅在队列空闲时释放所有权；执行中的提交仍由原进程独占。"""
+        if self.pending.unfinished_tasks:
+            raise RuntimeError('礼赠任务仍在执行，请等待任务结束')
+        if self.dual_verification:
+            self.verification.close()
         with self.lock:
             if self._closed:
                 return
@@ -226,6 +260,12 @@ class RegistrationQueue(RetryBatches, JobStorage):
                     status = 'corrupt'
                 reviews[status] = reviews.get(status, 0) + 1
             return {'review_claims': reviews, 'pending_tasks': self.pending.unfinished_tasks,
+                    'dual_verification': self.dual_verification,
+                    'verification_backlog': self.verification.backlog(),
+                    'verification_completed': self.verification.completed,
+                    'verification_max_wait_seconds': self.verification.max_wait,
+                    'verification_average_seconds': self.verification.elapsed / max(1, self.verification.completed),
+                    'verification_health': self.verification.close_error or 'ok',
                     'lock_max_wait_seconds': self.lock.max_wait_seconds,
                     'lock_max_hold_seconds': self.lock.max_hold_seconds,
                     'queue_max_wait_seconds': self.pending.max_wait_seconds}
@@ -278,7 +318,7 @@ class RegistrationQueue(RetryBatches, JobStorage):
     def _item(self, row):
         timestamp = now()
         return {"row_id": row["id"], "business_key": business_key(row), "state": "waiting_for_workflow",
-                "execution_id": uuid.uuid4().hex,
+                "execution_id": uuid.uuid4().hex, 'state_version': 0,
                 "detail": getattr(self.operations, "configuration_detail", "具体业务操作尚未接入"), "submit_attempted": False, "attempts": 0,
                 "updated_at": timestamp, "display_updated_at": timestamp, "events": []}
 
@@ -313,6 +353,22 @@ class RegistrationQueue(RetryBatches, JobStorage):
             overlay.unlink(missing_ok=True)
         for index in range(len(job['items'])):
             self._index_item(path, job, index)
+            self._update_order_hold(path, job['rows'][index], job['items'][index])
+        self.changed.set()
+
+    def _update_order_hold(self, path, row, item):
+        identity = (path.name, item['row_id'])
+        holds = self._order_holds.setdefault(row['order_no'].strip(), {})
+        unsafe = (item['state'] in {'submitting', 'verification_pending', 'verifying', 'manual_required'}
+                  or item.get('submit_attempted') and item.get('submission_status') != 'not_submitted'
+                  and item['state'] != 'success')
+        if unsafe:
+            holds[identity] = item.get('execution_id')
+        else:
+            holds.pop(identity, None)
+
+    def order_busy(self, order_no, exclude=None):
+        return any(key != exclude for key in self._order_holds.get(order_no.strip(), {}))
 
     @staticmethod
     def _summarize_job(job):
@@ -344,6 +400,10 @@ class RegistrationQueue(RetryBatches, JobStorage):
             interrupted = False
             for row, item in zip(job["rows"], job["items"]):
                 if item["state"] in ACTIVE:
+                    if item['state'] == 'verification_pending' and any(
+                            r['status'] == 'ready' and r['execution_id'] == item.get('execution_id')
+                            for _, r in self.verification.records()):
+                        continue
                     item.setdefault("display_updated_at", item.get("updated_at", job["created_at"]))
                     safe = (item.get('submit_attempted') is False and item.get('attempts') == 0
                             and not item.get('evidence', {}).get('submit_clicked')
@@ -357,7 +417,7 @@ class RegistrationQueue(RetryBatches, JobStorage):
                                     detail='上次任务未领取；等待主机明确开始，未自动执行', updated_at=now())
                     else:
                         status = 'not_submitted' if item['state'] == 'querying' and safe else 'uncertain'
-                        item.update(state="failed", submission_status=status,
+                        item.update(state="manual_required" if self.dual_verification and status == 'uncertain' else "failed", submission_status=status,
                                     detail="上次任务中断，保留提交依据；未自动重试登记", updated_at=now())
                         self._schedule_review(item, row)
                     item.setdefault("events", []).append({"state": item['state'], "at": now(), "detail": item["detail"]})
@@ -397,6 +457,8 @@ class RegistrationQueue(RetryBatches, JobStorage):
                         continue
                     latest[row["id"]] = updated
                     result[row["id"]] = {"signature": row_signature(row), "state": item["state"], "task_id": job["id"],
+                                         'execution_id': item.get('execution_id'), 'state_version': item.get('state_version', 0),
+                                         'submission_status': item.get('submission_status'),
                                          "task_key": task_key(row),
                                          "detail": item["detail"], "attempts": item["attempts"], "updated_at": item["updated_at"],
                                          "review_due_at": self._review_due_at(item), "review_result": item.get("review_result"),
@@ -638,8 +700,13 @@ class RegistrationQueue(RetryBatches, JobStorage):
         with self.lock:
             if self._closed or self._stopping or not self.configured:
                 return 0
+            if self.dual_verification and sum(json.loads(p.read_text(encoding='utf-8')).get('status') == 'queued'
+                    for p in (self.directory / 'auto_reviews').glob('*.json')) >= 64:
+                return 0
             scheduled = 0
             for record in self._latest_attempts():
+                if scheduled >= 16:
+                    break
                 item = record["item"]
                 due = self._review_due_at(item)
                 if item["state"] != "failed" or not due or item.get("source") == "manual" or item.get("review_result"):
@@ -656,7 +723,7 @@ class RegistrationQueue(RetryBatches, JobStorage):
                     atomic_write(path, json.dumps({'execution_id': identity, 'status': 'manual_required',
                                                   'due_at': due, 'detail': reason}, ensure_ascii=False).encode())
                     continue
-                prepare = getattr(self.operations, "prepare_start", None)
+                prepare = None if self.dual_verification else getattr(self.operations, "prepare_start", None)
                 try:
                     if callable(prepare):
                         prepare()
@@ -668,10 +735,13 @@ class RegistrationQueue(RetryBatches, JobStorage):
                         self._release_unused_start()
                     break
                 key = "review:" + identity
-                self.scheduled.add(key)
-                self.pending.put((key, path))
+                if not self.dual_verification:
+                    self.scheduled.add(key)
+                    self.pending.put((key, path))
                 scheduled += 1
-            if scheduled and (self.worker is None or not self.worker.is_alive()):
+            if scheduled and self.dual_verification:
+                self.verification.wake()
+            if scheduled and not self.dual_verification and (self.worker is None or not self.worker.is_alive()):
                 self.worker = threading.Thread(target=self._work, name="registration-worker", daemon=True)
                 self.worker.start()
             return scheduled
@@ -699,7 +769,7 @@ class RegistrationQueue(RetryBatches, JobStorage):
             return '缺少有效回执或关联证据，保留待人工核查，禁止重提'
         return ''
 
-    def _review_once(self, path):
+    def _review_once(self, path, *, operations=None):
         review = json.loads(path.read_text(encoding="utf-8"))
         identity = review["execution_id"]
         with self.lock:
@@ -714,11 +784,14 @@ class RegistrationQueue(RetryBatches, JobStorage):
                 atomic_write(path, json.dumps(review, ensure_ascii=False).encode())
                 return
             review.update(status="running", started_at=now())
+            expected_version = record['item'].get('state_version', 0)
+            if self.dual_verification:
+                self.verification.active_order = record['row']['order_no'].strip()
             atomic_write(path, json.dumps(review, ensure_ascii=False).encode("utf-8"))
         identifiers, success = [], False
         try:
             request = request_from_row(record["row"], record["catalog"])
-            after = self.operations.query_order(request.order_no)  # 唯一复核查询入口；没有班牛提交调用。
+            after = (operations or self.operations).query_order(request.order_no)
             validate_snapshot(after, request.order_no)
             evidence = record["item"].get("evidence", {})
             raw = evidence.get("before_snapshot")
@@ -740,8 +813,11 @@ class RegistrationQueue(RetryBatches, JobStorage):
         with self.lock:
             # 在同一串行队列内仍重新核对最新执行身份，防止旧失败覆盖新任务。
             latest = next((entry for entry in self._latest_attempts() if task_key(entry["row"]) == task_key(record["row"])), None)
-            if latest is None or latest["failure_id"] != identity:
-                success, detail, identifiers = False, "已有更新的登记结果，保留原状态", []
+            if (latest is None or latest["failure_id"] != identity
+                    or latest['item'].get('state_version', 0) != expected_version):
+                review.update(status='interrupted', detail='已有更新的登记结果，未覆盖状态')
+                atomic_write(path, json.dumps(review, ensure_ascii=False).encode())
+                return
             for job_path in self._paths():
                 job = self._load(job_path)
                 changed = False
@@ -758,6 +834,8 @@ class RegistrationQueue(RetryBatches, JobStorage):
                     else:
                         item.update(detail=item["detail"] + "；自动复核：" + detail, updated_at=now())
                     changed = True
+                    item['state_version'] = item.get('state_version', 0) + 1
+                    item['reviewed_at'] = now()
                 if changed:
                     self._save(job_path, job)
             review.update(status="done", success=success, completed_at=now(), detail=detail,
@@ -926,6 +1004,8 @@ class RegistrationQueue(RetryBatches, JobStorage):
                 if isinstance(path, tuple):
                     if path[0].startswith('batch:'):
                         self._run_retry_batch(path[1])
+                    elif path[0].startswith('initial:'):
+                        self.verification.verify(path[1], json.loads(path[1].read_text(encoding='utf-8')))
                     else:
                         self._review_once(path[1])
                 else:
@@ -964,9 +1044,16 @@ class RegistrationQueue(RetryBatches, JobStorage):
             if not self._index_ready:
                 self._refresh_result_index()
         for index, row in enumerate(job["rows"]):
+            if self.dual_verification:
+                self.verification.wait_capacity()
             with self.lock:
                 item = self._current_item(path, index)
                 if item["state"] in TERMINAL:
+                    continue
+                if self.order_busy(row['order_no'], (path.name, item['row_id'])):
+                    item.update(state='failed', submission_status='not_submitted',
+                                detail='同订单仍有待核验或不确定提交，本行未提交；请人工核查')
+                    self._save_item(path, job, index, item)
                     continue
                 previous = self._existing_result(task_key(row), exclude=(path.name, item["row_id"]), order_no=row["order_no"].strip())
                 if previous and (not item.get("retry_of") or _verified_success(previous)):
@@ -991,6 +1078,15 @@ class RegistrationQueue(RetryBatches, JobStorage):
                     target.setdefault("execution_id", uuid.uuid4().hex)
                     evidence = updates.pop("evidence", None)
                     target.update(state=state, updated_at=now(), **updates)
+                    if state == 'querying':
+                        target.setdefault('started_at', now())
+                    if state == 'verifying':
+                        target.setdefault('submitted_at', now())
+                    if state in TERMINAL:
+                        target.setdefault('first_terminal_at', now())
+                        target.setdefault('completed_at', now())
+                        if state in {'success', 'failed'} and target.get('submission_status') == 'submitted':
+                            target.setdefault('verified_at', now())
                     if state == "failed":
                         self._schedule_review(target, row)
                     if evidence:
@@ -1006,7 +1102,9 @@ class RegistrationQueue(RetryBatches, JobStorage):
                         raise PlatformOperationError("重登核查未通过；未进行班牛登记")
                     report("querying", detail="主机重登核查通过，班牛暂无该订单任务",
                            evidence={"retry_checked": True})
-            Workflow(self.operations).execute(row, job["gift_catalog"], report, before_submit=guard)
+            handoff = (lambda request, before, receipt: self.verification.handoff(
+                path, job, index, row, request, before, receipt)) if self.dual_verification else None
+            Workflow(self.operations).execute(row, job["gift_catalog"], report, before_submit=guard, handoff=handoff)
             self._claimed = None
             self._service_review_boundary()
         self._compact_completed(path)

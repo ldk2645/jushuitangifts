@@ -61,6 +61,8 @@ class JobStorage:
 
     def _save_item(self, path, job, index, item):
         from .registration import now
+        previous = self._current_item(path, index)
+        item['state_version'] = previous.get('state_version', 0) + 1
         base = self._snapshot_cache[path.name][1]
         update = {'generation': base.get('storage_generation', 'legacy'), 'index': index, 'item': item,
                   'base_execution_id': base['items'][index].get('execution_id')}
@@ -70,6 +72,8 @@ class JobStorage:
         job['items'][index] = deepcopy(item)
         job['updated_at'] = now()
         self._index_item(path, job, index)
+        self._update_order_hold(path, job['rows'][index], item)
+        self.changed.set()
 
     def _compact_completed(self, path):
         """Prepare outside the queue lock; compare-and-swap before publishing.

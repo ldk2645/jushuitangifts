@@ -183,7 +183,7 @@ class Workflow:
     def __init__(self, operations: PlatformOperations):
         self.operations = operations
 
-    def execute(self, row, catalog, report: Callable, before_submit=None):
+    def execute(self, row, catalog, report: Callable, before_submit=None, handoff=None):
         stage = "querying"
         submission_status = "not_submitted"
         try:
@@ -217,6 +217,9 @@ class Workflow:
                 return
             stage = "verifying"
             submission_status = "submitted"
+            if handoff is not None:
+                handoff(request, before, receipt)
+                return
             report("verifying", detail="班牛已提交，正在聚水潭复查新增信息", reference=receipt.reference,
                    submission_status=submission_status, evidence={"receipt": asdict(receipt)})
             # 可选适配器只做有界的只读复查；不会再次调用班牛提交方法。
