@@ -1898,16 +1898,37 @@ async function deleteHostRows(all) {
 }
 $("#host-delete-selected").addEventListener("click", () => deleteHostRows(false));
 $("#host-delete-all").addEventListener("click", () => deleteHostRows(true));
+let taskLogDays = [];
+function showTaskLogDay() {
+  const day = taskLogDays.find(d => d.business_day === $("#task-log-day").value);
+  const batch = $("#task-log-batch"); batch.replaceChildren(new Option("该日期所有批次", ""));
+  for (const item of day?.batches || []) batch.append(new Option(`${item.batch_id.slice(0, 16)}… (${item.done}/${item.input})`, item.batch_id));
+  const labels = {pending:"待导出",partial:"非最终版",final:"已导出最终版",needs_refresh:"待刷新",error:"导出失败"};
+  $("#task-log-progress").textContent = day ? `${day.batch_state === "open" ? "处理中" : "首次处理已结束"} · 完成 ${day.done}/${day.input} · 剩余 ${day.remaining} · ${labels[day.export_state]} · 版本 ${day.version}` : "没有可导出的任务";
+  $("#task-log-download").disabled = !day;
+}
+$("#task-log-day").addEventListener("change", showTaskLogDay);
+$("#task-log-close").addEventListener("click", () => $("#task-log-dialog").close());
 $("#export-today").addEventListener("click", async () => {
-  const button = $("#export-today"); button.disabled = true;
   try {
-    const response = await fetch("/api/registrations/export-today", { cache: "no-store" });
-    if (!response.ok) throw new Error((await response.json()).error || "日志导出失败");
+    const result = await api("/api/registrations/task-logs"); taskLogDays = result.days;
+    $("#task-log-day").replaceChildren(...taskLogDays.map(d => new Option(d.business_day, d.business_day)));
+    $("#task-log-warning").textContent = result.needs_manual_reconciliation.length ? `${result.needs_manual_reconciliation.length} 个旧批次缺少可靠创建日期，需主机人工核对。` : "";
+    showTaskLogDay(); $("#task-log-dialog").showModal();
+  } catch (error) { toast(error.message, true); }
+});
+$("#task-log-download").addEventListener("click", async () => {
+  const button = $("#task-log-download"); button.disabled = true;
+  try {
+    const result = await api("/api/registrations/task-logs/export", {method:"POST", body:JSON.stringify({
+      day:$("#task-log-day").value, batch_id:$("#task-log-batch").value, partial:$("#task-log-partial").checked})});
+    const response = await fetch(result.download_url, {cache:"no-store"});
+    if (!response.ok) throw new Error((await response.json()).error || "下载失败，请重新生成");
     const blob = await response.blob(), url = URL.createObjectURL(blob);
     const link = document.createElement("a"); link.href = url;
-    link.download = response.headers.get("Content-Disposition")?.match(/filename="([^"]+)"/)?.[1] || "gift-registration.xlsx";
+    link.download = result.filename;
     document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000);
-    toast("今日日志已导出，包含成功与失败两个工作表。");
+    toast(result.filename.includes("partial") ? "已下载 partial 非最终版；仍有订单未结束。" : "任务日志已下载，包含全部原始行和批次汇总。");
   } catch (error) { toast(error.message, true); }
   finally { button.disabled = false; }
 });

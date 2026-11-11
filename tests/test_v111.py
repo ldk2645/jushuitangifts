@@ -359,8 +359,10 @@ class NightlyTests(IsolatedQueue):
         restarted = MaintenanceService(self.jobs, self.store, self.folder, clock=lambda: self.clock)
         for _ in range(3):
             restarted.tick()
-        self.assertEqual(len(list(self.service.exports.glob("*.xlsx"))), 3)
-        self.assertEqual(restarted.status()["next_run"], "2026-10-31T01:00:00+08:00")
+        # V4 does not manufacture empty completion-day reports or advance the
+        # legacy cursor; only accepted batches can produce task-day exports.
+        self.assertEqual(len(list(self.service.exports.glob("*.xlsx"))), 0)
+        self.assertEqual(restarted.status()["next_run"], "2026-10-28T01:00:00+08:00")
 
     def test_busy_queue_defers_export_and_cleanup_until_idle(self):
         self.complete([row()], self.clock - timedelta(hours=3))

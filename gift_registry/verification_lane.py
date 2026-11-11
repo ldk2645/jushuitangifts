@@ -27,12 +27,14 @@ class VerificationLane:
         self.burst = 0
         self.close_error = None
         self.busy = False
+        self.active = {}  # Only unfinished initial tasks, bounded by LIMIT.
 
     def records(self):
         return [(p, json.loads(p.read_text(encoding='utf-8'))) for p in sorted(self.directory.glob('*.json'))]
 
     def backlog(self):
-        return sum(r['status'] in {'ready', 'running'} for _, r in self.records())
+        with self.condition:
+            return len(self.active)
 
     def wait_capacity(self):
         # Called before taking a baseline, without jobs.lock. Disk is bounded by
@@ -66,9 +68,13 @@ class VerificationLane:
             self.jobs._save_item(path, job, index, item)
         self.wake()
 
-    @staticmethod
-    def write(path, record):
+    def write(self, path, record):
         atomic_write(path, json.dumps(record, ensure_ascii=False).encode('utf-8'))
+        with self.condition:
+            if record['status'] in {'ready','running'}:
+                self.active[path] = deepcopy(record)
+            else:
+                self.active.pop(path,None)
 
     def recover(self):
         from .registration import now
@@ -97,7 +103,8 @@ class VerificationLane:
             self.condition.notify_all()
 
     def choose(self):
-        initial = next(((p, r) for p, r in self.records() if r['status'] == 'ready'), None)
+        initial = next(((p,r) for p,r in sorted(self.active.items(), key=lambda pair:pair[1]['created_at'])
+                        if r['status']=='ready'),None)
         delayed = next((p for p in sorted((self.jobs.directory / 'auto_reviews').glob('*.json'))
                         if json.loads(p.read_text(encoding='utf-8')).get('status') == 'queued'), None)
         if delayed and (not initial or self.burst >= 3):

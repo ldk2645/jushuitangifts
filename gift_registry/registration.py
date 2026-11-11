@@ -17,6 +17,7 @@ from .diagnostics import diagnose
 from .retry_batches import RetryBatches
 from .job_storage import JobStorage
 from .queue_metrics import MeasuredQueue, MeasuredRLock
+from .business_day import business_day
 from .workflow import (PlatformOperationError, Workflow, GiftRecord, OrderSnapshot, SubmissionReceipt,
                        request_from_row, validate_snapshot, validate_receipt, verify_new_records, verify_added_records)
 
@@ -193,7 +194,7 @@ class RegistrationQueue(RetryBatches, JobStorage):
                     if completed:
                         result = completed['item']['review_result']
                         record.update(status='done', success=bool(result['success']), completed_at=result['at'],
-                                      detail=result['detail'], log_day=datetime.fromisoformat(completed['completed_at']).date().isoformat())
+                                      detail=result['detail'], log_day=business_day(completed['created_at']))
                     else:
                         record.update(status="interrupted", detail="自动复核中断，未重复查询或提交")
                     atomic_write(path, json.dumps(record, ensure_ascii=False).encode("utf-8"))
@@ -274,6 +275,7 @@ class RegistrationQueue(RetryBatches, JobStorage):
 
     def _load(self, path):
         job = self._read_snapshot(path)
+        job.setdefault('created_at', '')  # Unknown legacy dates remain unreconciled, never guessed.
         if (not isinstance(job, dict) or not isinstance(job.get('rows'), list)
                 or any(not isinstance(row, dict) or not isinstance(row.get('id'), str)
                        or not isinstance(row.get('order_no'), str) for row in job.get('rows', []))
@@ -327,6 +329,13 @@ class RegistrationQueue(RetryBatches, JobStorage):
     def _save(self, path, job):
         # 在结果复用更新快照前保留实际终态，避免重登成功抹去当天的原失败原因。
         documents = [self._load(path)] if path.exists() else []
+        from .business_day import business_day
+        if not documents:
+            day = business_day(job.get('created_at'))
+            job.update(batch_id=job['id'], business_day=day, log_day=day,
+                       day_source='accepted_created_at' if day else 'needs_manual_reconciliation')
+        elif documents[0].get('business_day') != job.get('business_day'):
+            raise ValueError('不能更改已接受任务的业务归属日')
         documents.append(job)
         for document in documents:
             for record in self._job_attempts(document):
@@ -512,7 +521,9 @@ class RegistrationQueue(RetryBatches, JobStorage):
             completed_at = terminal[-1]["at"] if terminal else job["created_at"]
             completed_at = item.get("review_original_completed_at", completed_at)
             yield {"failure_id": identity, "row": row, "item": item, "catalog": job.get("gift_catalog", []),
-                   "completed_at": completed_at, "created_at": job["created_at"]}
+                   "completed_at": completed_at, "created_at": job["created_at"],
+                   'batch_id':job['id'], 'business_day':job.get('business_day'),
+                   'origin_batch_id':job.get('origin_batch_id')}
 
     def _attempt_records(self):
         """按实际执行去重：换行、重复开始产生的结果副本不增加日志或重登次数。"""
@@ -664,6 +675,7 @@ class RegistrationQueue(RetryBatches, JobStorage):
                             retry_of=failure_id, retry_evidence=deepcopy(record["item"].get("evidence", {})),
                             evidence=deepcopy(record["item"].get("evidence", {})))
                 job = {"version": 3, "id": path.stem, "created_at": now(),
+                       'origin_batch_id':record.get('batch_id'), 'parent_execution_id':failure_id,
                        "rows": [row], "gift_catalog": deepcopy(record["catalog"]), "items": [item]}
                 self._save(path, job)
             except Exception as exc:
@@ -729,7 +741,8 @@ class RegistrationQueue(RetryBatches, JobStorage):
                 try:
                     if callable(prepare):
                         prepare()
-                    atomic_write(path, json.dumps({"execution_id": identity, "status": "queued", "due_at": due},
+                    atomic_write(path, json.dumps({"execution_id": identity, "status": "queued", "due_at": due,
+                                                  'order_no':record['row']['order_no'].strip(), 'log_day':business_day(record['created_at'])},
                                                  ensure_ascii=False).encode("utf-8"))
                 except Exception as exc:
                     diagnose(self.directory, 'review', 'claim', exc, identity)
@@ -841,7 +854,7 @@ class RegistrationQueue(RetryBatches, JobStorage):
                 if changed:
                     self._save(job_path, job)
             review.update(status="done", success=success, completed_at=now(), detail=detail,
-                          log_day=datetime.fromisoformat(record["completed_at"]).astimezone().date().isoformat())
+                          log_day=business_day(record['created_at']))
             atomic_write(path, json.dumps(review, ensure_ascii=False).encode("utf-8"))
 
     def record_external_submission(self, row, catalog, before, after=None, receipt=None, source_reference=""):

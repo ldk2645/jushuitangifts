@@ -26,6 +26,9 @@ class MaintenanceService:
         self.lock = threading.RLock()
         self.thread = None
         self.last_fault = None
+        from .registration import RegistrationQueue
+        from .task_day_export import TaskDayExports
+        self.task_exports = TaskDayExports(jobs, rows, directory, clock=clock) if isinstance(jobs, RegistrationQueue) else None
 
     def _read(self):
         try:
@@ -90,6 +93,11 @@ class MaintenanceService:
             self.jobs.enqueue_due_reviews(current)
         except Exception as exc:
             diagnose(self.directory, 'maintenance', 'schedule_reviews', exc)
+        if self.task_exports is not None:
+            try:
+                self.task_exports.tick()
+            except (OSError,ValueError) as exc:
+                diagnose(self.directory,'task_export','reconcile',exc)
         self._archive_tick()
 
     def reconcile_archive(self, expected_revision):
@@ -99,6 +107,28 @@ class MaintenanceService:
         A corrupt cursor remains blocked; it must be repaired separately.
         """
         self.jobs.enqueue_due_reviews(self.clock().astimezone(CHINA))
+        self._cleanup_executions = set()
+        self._cleanup_tokens = {}
+        # Legacy explicit cleanup requires both a trustworthy cursor and a V4
+        # final for the original batch. Timer ticks still never delete drafts.
+        try:
+            state=self._read()
+            cutoff=datetime.combine(datetime.fromisoformat(state['next_day']).date(),time(1),CHINA)
+            if self.task_exports is not None and self.clock().astimezone(CHINA)>=cutoff and not self.jobs.pending.unfinished_tasks:
+                self.task_exports.tick()
+                jobs,marks,_=self.task_exports.snapshot()
+                from .business_day import job_day
+                from .task_day_export import digest
+                for day in {job_day(j) for j in jobs} - {None}:
+                    batches=[j for j in jobs if job_day(j)==day]
+                    manifest=self.task_exports.read_manifest(day)
+                    if manifest.get('export_state')=='final' and manifest.get('source_version')==digest([batches,marks]):
+                        file=self.task_exports.exports/manifest['filename']
+                        if file.exists() and hashlib.sha256(file.read_bytes()).hexdigest()==manifest.get('sha256'):
+                            self._cleanup_executions.update(i.get('execution_id') for j in batches for i in j['items'])
+                            self._cleanup_tokens[day]=self.task_exports.token(day)
+        except (OSError,ValueError,KeyError,TypeError):
+            return  # No destructive maintenance can proceed without proof.
         self._archive_tick(expected_revision=expected_revision)
 
     def _archive_tick(self, expected_revision=None):
@@ -110,6 +140,11 @@ class MaintenanceService:
                     self._save(state)
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 self.last_fault = diagnose(self.directory, 'maintenance', 'read_cursor', exc)
+                return
+            if expected_revision is None and self.task_exports is not None:
+                # V4 scheduling has its own manifest and never consumes the old
+                # completion-day cursor. Keep the latter intact for rollback.
+                self.last_fault = None
                 return
             try:
                 # 与普通开始登记保持同样的锁顺序；清理不会与快照创建交错。
@@ -140,12 +175,15 @@ class MaintenanceService:
                         for row in document["rows"]:
                             status = states.get(row["id"], {})
                             eligible = (status.get("state") == "success" and not status.get("manual_status")
+                                        and status.get('execution_id') in getattr(self,'_cleanup_executions',set())
                                         and status.get("signature") == row_signature(row)
                                         and datetime.fromisoformat(status["updated_at"]) <= cutoff)
                             (removed if eligible else kept).append(row)
                         # A clock tick may export, but never authorizes deleting a draft.
                         # Explicit archive reconciliation is a separate maintenance action.
                         if removed and expected_revision is not None:
+                            if any(self.task_exports.token(day)!=token for day,token in self._cleanup_tokens.items()):
+                                raise ValueError('报表源版本已变化，未清理草稿')
                             backup = self.directory / "draft_archive" / f"before-cleanup-{cutoff.date().isoformat()}.json"
                             payload = json.dumps(document, ensure_ascii=False, indent=2).encode("utf-8")
                             if backup.exists() and backup.read_bytes() != payload:
@@ -176,15 +214,20 @@ class MaintenanceService:
             return
         def work():
             while not self.stop.is_set():
+                self.jobs.changed.clear()
                 try:
                     self.tick()
                 except Exception as exc:
                     self.last_fault = diagnose(self.directory, 'maintenance', 'loop', exc)
-                self.stop.wait(30)
+                # Event-triggered completion with a bounded debounce and timer
+                # reconciliation; not gated on registration queue emptiness.
+                if self.stop.wait(.25): break
+                self.jobs.changed.wait(30)
         self.thread = threading.Thread(target=work, name="gift-maintenance", daemon=True)
         self.thread.start()
 
     def close(self):
         self.stop.set()
+        self.jobs.changed.set()
         if self.thread is not None:
             self.thread.join(timeout=5)

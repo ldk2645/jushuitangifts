@@ -62,7 +62,7 @@
               <span>主机管理 · v1.3.0</span>
 
               <button id="manage-groups" class="button" type="button">礼品分组管理</button>
-              <button id="export-today" class="button" type="button">导出今日日志</button>
+              <button id="export-today" class="button" type="button">导出任务日志</button>
 
               <button id="host-delete-selected" class="button" type="button">删除所选订单</button>
               <button id="host-delete-all" class="button" type="button">删除全部订单</button>
@@ -106,6 +106,17 @@
     <p class="retry-intro">取消所选任务及其他批次中“同订单号＋同礼品组合”的排队副本。同订单的其他礼品组合继续排队，草稿与任务记录保留。</p>
     <p class="retry-safety">已进入查询、登记或复查的任务会继续完成。如果确认期间订单已经开始，后台会跳过该单并提示。</p>
     <button id="cancel-apply" class="button primary" type="button">确认取消排队</button>
+  </dialog>
+  <dialog id="task-log-dialog" class="retry-dialog" aria-labelledby="task-log-title">
+    <h2 id="task-log-title">导出任务日志</h2>
+    <p>按任务接受时的北京时间归属。跨日完成仍计入原日期；未完成报告标记为 partial 非最终版。</p>
+    <label>业务日期 <select id="task-log-day"></select></label>
+    <label>批次 <select id="task-log-batch"></select></label>
+    <p id="task-log-progress" role="status"></p>
+    <p id="task-log-warning"></p>
+    <label><input id="task-log-partial" type="checkbox"> 允许下载未完成的非最终版</label>
+    <div class="dialog-actions"><button id="task-log-close" class="button" type="button">关闭</button>
+    <button id="task-log-download" class="button primary" type="button">生成并下载</button></div>
   </dialog>
   <dialog id="status-dialog" class="retry-dialog" aria-labelledby="status-title">
     <div class="retry-heading"><h2 id="status-title">修改所选订单状态</h2><button id="status-close" class="button" type="button">关闭</button></div>

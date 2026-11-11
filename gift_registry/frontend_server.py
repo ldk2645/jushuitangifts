@@ -11,7 +11,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import URLError
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs, urlencode
 from urllib.request import ProxyHandler, build_opener
 
 from .access_log import AccessLog, request_path
@@ -286,6 +286,31 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
             elif path == "/api/registrations/status":
                 self.send(200, {"row_states": management.states(), "workflow_configured": jobs.configured,
                                 "draft_revision": row_store.read()["revision"], "server_stopping": self.server.stopping})
+            elif path in ('/api/registrations/task-logs','/api/registrations/task-logs/download'):
+                if not self.is_local_access():
+                    self.send(403, {'error':'任务日志仅允许主机本地访问'}); return
+                service=self.server.maintenance.task_exports
+                if path.endswith('/download'):
+                    query=parse_qs(urlsplit(self.path).query)
+                    day=query.get('day',[''])[0]; service.manifest_path(day)
+                    batch=query.get('batch_id',[''])[0]
+                    import hashlib
+                    suffix=('-batch-'+hashlib.sha256(batch.encode()).hexdigest()[:12] if batch else '')
+                    suffix+='-partial' if query.get('partial',['0'])[0]=='1' else ''
+                    name=f'gift-registration-{day}{suffix}.xlsx'
+                    if not batch:
+                        inventory=next((d for d in service.inventory()['days'] if d['business_day']==day),None)
+                        if inventory is None or inventory['export_state'] not in {'final','partial'}:
+                            self.send(409,{'error':'任务记录已变化，请重新生成报告'}); return
+                        manifest=service.read_manifest(day)
+                        if manifest.get('filename')!=name:
+                            self.send(409,{'error':'报告版本已更新，请重新生成'}); return
+                    payload=(service.exports/name).read_bytes()
+                    if not batch and hashlib.sha256(payload).hexdigest()!=manifest.get('sha256'):
+                        self.send(409,{'error':'报告校验失败，请重新生成'}); return
+                    self.send(200,payload,'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',filename=name)
+                else:
+                    self.send(200,service.inventory())
             elif path in ("/api/registrations/failures", "/api/registrations/export-today"):
                 if not self.is_local_access():
                     self.send(403, {"error": "失败重登与日志导出仅允许主机本地访问"})
@@ -347,8 +372,9 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
             starting = self.command == "POST" and path == "/api/registrations/start"
             retrying = self.command == "POST" and path == "/api/registrations/retry"
             retrying_all = self.command == "POST" and path == "/api/registrations/retry-all"
+            exporting = self.command == 'POST' and path == '/api/registrations/task-logs/export'
             managing = self.command == "POST" and path in {"/api/rows/status", "/api/rows/delete"}
-            if (retrying or retrying_all or managing or cancelling) and not self.is_local_access():
+            if (retrying or retrying_all or managing or cancelling or exporting) and not self.is_local_access():
                 self.send(403, {"error": "主机管理仅允许本机回环地址操作"})
                 return
             adding_gift = self.command == "POST" and path == "/api/gifts"
@@ -360,7 +386,7 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
             if acknowledging_network and (not self.is_local_access() or network_monitor is None):
                 self.send(403, {'error': '网络提醒只能在主机本地核对'})
                 return
-            if not any((starting, retrying, retrying_all, managing, cancelling, adding_gift, updating_groups, acknowledging_network)) and (self.command != "PUT" or path != "/api/rows"):
+            if not any((starting, retrying, retrying_all, managing, cancelling, exporting, adding_gift, updating_groups, acknowledging_network)) and (self.command != "PUT" or path != "/api/rows"):
                 self.send(404, {"error": "接口不存在"})
                 return
             try:
@@ -370,7 +396,16 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
                 document = json.loads(self.rfile.read(length))
                 if not isinstance(document, dict):
                     raise ValueError("请求数据格式不正确")
-                if acknowledging_network:
+                if exporting:
+                    if type(document.get('partial',False)) is not bool or not isinstance(document.get('batch_id',''),str):
+                        raise ValueError('导出范围格式不正确')
+                    day=document.get('day',''); batch=document.get('batch_id','')
+                    file=self.server.maintenance.task_exports.publish(day,partial=document.get('partial',False),batch_id=batch)
+                    if file is None:
+                        self.send(409,{'error':'仍有未完成订单，可选择导出 partial 非最终版'}); return
+                    self.send(200,{'download_url':'/api/registrations/task-logs/download?'+urlencode(
+                        dict(day=day,batch_id=batch,partial=int('-partial' in file.stem))), 'filename':file.name})
+                elif acknowledging_network:
                     self.send(200, network_monitor.acknowledge(document.get('change_id')))
                 elif adding_gift:
                     result = catalog_store.add(document)
