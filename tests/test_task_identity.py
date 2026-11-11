@@ -94,13 +94,13 @@ class TaskIdentityTests(unittest.TestCase):
         due = datetime.fromisoformat(self.jobs.states()['a']['review_due_at'])
         self.ops.modes.clear()
         self.run_rows([b])
-        self.assertEqual(len(self.jobs.retry_candidates()['failures']), 1)
-        self.assertFalse(self.jobs.retry_candidates()['failures'][0]['eligible'])
+        self.assertEqual(len(self.jobs.retry_candidates()['failures']), 2)
+        self.assertTrue(any(not f['eligible'] for f in self.jobs.retry_candidates()['failures']))
         self.assertEqual(self.jobs.enqueue_due_reviews(due), 1)
         self.jobs.pending.join()
-        self.assertEqual(len(self.ops.submissions), 2)
+        self.assertEqual(len(self.ops.submissions), 1)
         self.assertIsNotNone(self.jobs.states()['a']['review_result'])
-        self.assertEqual(self.jobs.states()['b']['state'], 'success')
+        self.assertEqual(self.jobs.states()['b']['submission_status'], 'not_submitted')
 
     def test_cancel_only_matching_combination_leaves_other_gifts_queued(self):
         entered, release = threading.Event(), threading.Event()

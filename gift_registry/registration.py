@@ -223,6 +223,8 @@ class RegistrationQueue(RetryBatches, JobStorage):
 
     def close(self):
         """仅在队列空闲时释放所有权；执行中的提交仍由原进程独占。"""
+        if self._closed:
+            return
         if self.pending.unfinished_tasks:
             raise RuntimeError('礼赠任务仍在执行，请等待任务结束')
         if self.dual_verification:

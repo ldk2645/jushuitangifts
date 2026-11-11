@@ -179,10 +179,12 @@ class ManagementTests(unittest.TestCase):
 
     def test_busy_management_rejected(self):
         self.register()
+        self.jobs.pending.put(None)
+        self.jobs.worker.join(5)
         self.jobs.pending.put('synthetic-reservation')
         try:
-            with self.assertRaises(ValueError):
-                self.management.mark(['r1'], 'failed')
+            self.management.mark(['r1'], 'failed')
+            self.assertEqual(self.management.states()['r1']['manual_status'], 'failed')
             with self.assertRaises(ValueError):
                 self.management.delete(None, True)
         finally:
@@ -254,7 +256,10 @@ class ManagementHTTPTests(unittest.TestCase):
             with request('/api/config') as response:
                 token = json.load(response)['token']
             headers = {'X-CSRF-Token': token, 'Origin': url}
-            bodies = [('/api/rows/status', {'revision': 1, 'row_ids': ['r1'], 'status': 'failed'}),
+            state = self.jobs.states()['r1']
+            target = dict(row_id='r1', task_id=state['task_id'], execution_id=state['execution_id'],
+                          row_signature=state['signature'], state_version=state['state_version'])
+            bodies = [('/api/rows/status', {'revision': 1, 'draft_revision':1, 'targets':[target], 'row_ids': ['r1'], 'status': 'failed'}),
                       ('/api/rows/delete', {'revision': 1, 'all': True}),
                       ('/api/registrations/retry-all', {'failure_ids': ['fake']})]
             for path, body in bodies:

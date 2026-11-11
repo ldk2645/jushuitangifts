@@ -385,7 +385,14 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
                         if cancelling:
                             result = management.cancel(document.get("targets"))
                         elif path.endswith("/status"):
-                            result = management.mark(document.get("row_ids"), document.get("status"))
+                            from .host_management import StatusConflict
+                            if 'targets' not in document or document.get('draft_revision') != document.get('revision'):
+                                raise RevisionConflict('页面缺少逐单执行版本，请刷新工作台后重试')
+                            try:
+                                result = management.mark(document.get("row_ids"), document.get("status"),
+                                                         targets=document['targets'], draft_revision=document['draft_revision'])
+                            except StatusConflict as exc:
+                                raise RevisionConflict(str(exc)) from None
                         else:
                             result = management.delete(document.get("row_ids"), document.get("all", False))
                         self.send(200, result)

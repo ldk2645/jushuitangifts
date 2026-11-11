@@ -339,7 +339,7 @@ function status(row) {
   if (complete && rowStates[row.id]?.signature === rowSignature(row)) {
     const state = rowStates[row.id];
     const labels = { waiting_for_workflow: ["待接入流程", "queued"], queued: ["等待执行", "processing"], querying: ["查询订单", "processing"],
-      submitting: ["正在登记", "processing"], verifying: ["复查确认", "processing"], success: ["成功", "success"], failed: ["失败", "failed"], skipped: ["已跳过", "skipped"], cancelled: ["已取消", "cancelled"] };
+      submitting: ["正在登记", "processing"], verification_pending: ["等待独立核验", "processing"], manual_required: ["需人工核查", "failed"], verifying: ["复查确认", "processing"], success: ["成功", "success"], failed: ["失败", "failed"], skipped: ["已跳过", "skipped"], cancelled: ["已取消", "cancelled"] };
     const [label, type] = labels[state.state] || ["等待执行", "processing"];
     if (state.manual_status) return { label: statusOptions[`manual_${state.manual_status}`], type: `manual_${state.manual_status}`,
       detail: `主机人工标记；自动核验结果：${label}。${state.detail || ""}。不改写自动核验日志；人工成功持续保留并排除重登。` };
@@ -447,6 +447,7 @@ async function saveNow(manual = false) {
 }
 
 function updateSummary() {
+  updateManualButton();
   $("#row-summary").textContent = `共 ${rows.length} 行 · 已填写 ${rows.filter(filled).length} 条${selectedStatus ? ` · 筛选显示 ${displayedRows.length} 行` : ""}`;
   const count = type => rows.filter(row => status(row).type === type).length;
   const manualCount = rows.filter(row => status(row).type.startsWith("manual_")).length;
@@ -902,6 +903,7 @@ function rangeBounds() {
 }
 function cellReference(row, column) { return `${String.fromCharCode(65 + column)}${row + 2}`; }
 function paintSelection(keepHandle = false) {
+  updateManualButton();
   if (!keepHandle) document.querySelectorAll(".fill-handle").forEach(node => node.remove());
   for (const node of selectedNodes) {
     node.classList.remove("selected-cell", "range-top", "range-bottom", "range-left", "range-right", "selected-gutter");
@@ -1806,7 +1808,14 @@ async function pollRetryBatch(id) {
   } catch (error) { toast(`批次进度暂不可读取：${error.message}。请勿据此判断未受理。`, true); }
 }
 
-let hostManaging = false, statusSelectedIds = [];
+let hostManaging = false, statusSelectedIds = [], statusTargets = [], statusRevision = null;
+function updateManualButton() {
+  const ids = selectedRowIds();
+  $("#edit-status").disabled = !ids.length || ids.some(id => {
+    const row = rows.find(row => row.id === id), state = rowStates[id];
+    return !row || state?.signature !== rowSignature(row) || state?.manual_editable !== true;
+  });
+}
 let cancellationTargets = [];
 function openCancellation(identifiers) {
   if (!hostActionsAvailable || hostManaging) return;
@@ -1848,6 +1857,10 @@ $("#edit-status").addEventListener("click", () => {
   if (!hostActionsAvailable) return;
   statusSelectedIds = selectedRowIds();
   if (!statusSelectedIds.length) return toast("请先选择订单行", true);
+  if (statusSelectedIds.some(id => !rowStates[id]?.manual_editable)) return toast("所选订单尚未完成本单核验，请稍后刷新", true);
+  statusRevision = revision;
+  statusTargets = statusSelectedIds.map(id => ({row_id:id, task_id:rowStates[id].task_id,
+    execution_id:rowStates[id].execution_id, row_signature:rowStates[id].signature, state_version:rowStates[id].state_version}));
   $("#status-selection").textContent = `所选 ${statusSelectedIds.length} 行`;
   $("#status-dialog").showModal();
 });
@@ -1857,7 +1870,8 @@ $("#status-apply").addEventListener("click", async () => {
   hostManaging = true; $("#status-apply").disabled = true;
   try {
     await prepareHostAction();
-    const result = await api("/api/rows/status", { method: "POST", body: JSON.stringify({ revision, row_ids: statusSelectedIds, status: $("#manual-status").value }) });
+    const result = await api("/api/rows/status", { method: "POST", body: JSON.stringify({ revision:statusRevision,
+      draft_revision:statusRevision, targets:statusTargets, row_ids: statusSelectedIds, status: $("#manual-status").value }) });
     rowStates = result.row_states; render(); $("#status-dialog").close(); toast(`已更新 ${result.count} 行人工状态`);
   } catch (error) { toast(error.message, true); }
   finally { hostManaging = false; $("#status-apply").disabled = false; }

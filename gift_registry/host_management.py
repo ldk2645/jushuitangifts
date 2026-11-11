@@ -9,6 +9,10 @@ from .registration import now, row_signature, legacy_row_signature, task_key
 from .sessions import atomic_write
 
 
+class StatusConflict(ValueError):
+    """A stale per-execution request; HTTP maps this to 409."""
+
+
 class HostManagement:
     def __init__(self, rows, jobs):
         self.rows, self.jobs = rows, jobs
@@ -47,7 +51,9 @@ class HostManagement:
             states = self.jobs.states()
             marks = self._read()["marks"]
             tasks = self._task_marks(states)
+            blocked = self._blocked_executions()
             for identifier, state in states.items():
+                state['manual_editable'] = self._editable(state, blocked)
                 task_mark = tasks.get(state["task_key"], {})
                 mark = marks.get(identifier, {})
                 if task_mark.get("status") == "success":
@@ -56,7 +62,7 @@ class HostManagement:
                       (mark.get("signature") != self._digest(state["signature"]) and
                        not (task_mark.get('row_id') == identifier and task_mark == mark))):
                     continue
-                if mark.get("status") and state["state"] in {"success", "failed", "skipped"}:
+                if mark.get("status") and state["state"] in {"success", "failed", "skipped", "manual_required"}:
                     state["manual_status"] = mark["status"]
                     state["manual_updated_at"] = mark["at"]
             return states
@@ -102,26 +108,63 @@ class HostManagement:
             raise ValueError("所选草稿行已变化，请刷新")
         return [records[identifier] for identifier in identifiers]
 
-    def mark(self, identifiers, status):
-        # 调用方持有草稿和队列锁，且已校验主机权限、revision。
+    def _blocked_executions(self):
+        # Queued/running delayed claims exclude this execution. Other orders
+        # and scheduled future reviews do not block an already terminal row.
+        blocked = set()
+        for path in (self.jobs.directory / 'auto_reviews').glob('*.json'):
+            review = json.loads(path.read_text(encoding='utf-8'))
+            if review.get('status') in {'queued', 'running'}:
+                blocked.add(review.get('execution_id'))
+        return blocked
+
+    def _editable(self, state, blocked=None):
+        if state.get('state') not in {'success', 'failed', 'skipped', 'manual_required'}:
+            return False
+        if state.get('execution_id') in (self._blocked_executions() if blocked is None else blocked):
+            return False
+        order = json.loads(state['signature'])[1] if state.get('signature') else ''
+        return self.jobs.verification.active_order != order
+
+    def mark(self, identifiers, status, *, targets=None, draft_revision=None, actor='host'):
+        with self.rows.lock, self.jobs.lock:
+            return self._mark(identifiers, status, targets=targets, draft_revision=draft_revision, actor=actor)
+
+    def _mark(self, identifiers, status, *, targets, draft_revision, actor):
         if not isinstance(status, str) or status not in {"", "success", "failed", "pending"}:
             raise ValueError("人工状态不受支持")
-        if self.jobs.pending.unfinished_tasks:
-            raise ValueError("请等待登记及复核结束后修改人工状态")
+        if draft_revision is not None and draft_revision != self.rows.document['revision']:
+            raise StatusConflict('草稿已变化，请刷新后重试')
         selected, states = self._selected(identifiers), self.jobs.states()
+        blocked = self._blocked_executions()
+        if targets is not None and (not isinstance(targets, list) or len(targets) != len(selected)
+                                    or any(not isinstance(t, dict) for t in targets)):
+            raise StatusConflict('缺少逐单执行版本，请刷新后重试')
         for row in selected:
             state = states.get(row["id"], {})
-            if state.get("signature") != row_signature(row) or state.get("state") not in {"success", "failed", "skipped"}:
-                raise ValueError("仅可标记内容未修改的已结束订单；待登记或进行中订单不能修改状态")
+            if state.get("signature") != row_signature(row) or not self._editable(state, blocked):
+                raise StatusConflict("仅可标记内容未修改且本单核验已结束的订单，请刷新")
+            if targets is not None:
+                target = next((t for t in targets if t.get('row_id') == row['id']), {})
+                expected = dict(row_id=row['id'], task_id=state['task_id'], execution_id=state.get('execution_id'),
+                                row_signature=state['signature'], state_version=state.get('state_version', 0))
+                if any(target.get(k) != v for k, v in expected.items()):
+                    raise StatusConflict('订单执行身份或状态版本已变化；本次整组选中行均未修改')
+            if status == 'success' and (state.get('submission_status') == 'uncertain' or state['state'] == 'manual_required'):
+                raise StatusConflict('提交结果不确定，只能标记待核查；人工显示不能替代平台核验')
         document = deepcopy(self._read())
         for row in selected:
             mark = {"row_id": row["id"], "signature": self._digest(row_signature(row)), "status": status,
                     "at": now(), "original_state": states[row["id"]]["state"],
                     "execution_updated_at": states[row["id"]]["updated_at"],
-                    "task_key": task_key(row)}
+                    "task_key": task_key(row), 'actor': actor,
+                    'old_status': document['marks'].get(row['id'], {}).get('status', ''),
+                    'new_status': status, 'execution_id': states[row['id']].get('execution_id'),
+                    'state_version': states[row['id']].get('state_version', 0)}
             document["events"].append(mark)
             document["marks"][row["id"]] = mark
         atomic_write(self.path, json.dumps(document, ensure_ascii=False, indent=2).encode("utf-8"))
+        self.jobs.changed.set()
         return {"row_states": self.states(), "count": len(selected)}
 
     def cancel(self, targets):
