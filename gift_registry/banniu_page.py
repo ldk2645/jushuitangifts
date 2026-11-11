@@ -144,7 +144,7 @@ class BanniuPage:
     def _dialog(self):
         return self._one(".w-edit-task-dialog")
 
-    def _click_once(self, element, *, resolve=None):
+    def _click_once(self, element, *, resolve=None, on_click_started=None):
         """等待真实点击位置可用，然后只点击一次；不绕过遮挡、不重试点击。"""
         positioned = None
         if resolve is None:
@@ -175,6 +175,8 @@ class BanniuPage:
 
         self._wait(ready, "班牛目标控件仍被遮罩覆盖或不可用，未点击；请人工核查")
         with self._form_action():
+            if on_click_started is not None:
+                on_click_started()
             element.click()
 
     def _field(self, selector):
@@ -534,10 +536,12 @@ class BanniuPage:
             self._require_prepared_session()
             submitted_at = datetime.now()
             stage = '点击提交或读取回执'
-            click_attempted = True
-            if self._owned_form is not None:
-                self._submitted_form_token = self._owned_form[2]
-            self._click_once(button)  # 唯一提交点；异常、超时也绝不重试。
+            def mark_click_started():
+                nonlocal click_attempted
+                click_attempted = True
+                if self._owned_form is not None:
+                    self._submitted_form_token = self._owned_form[2]
+            self._click_once(button, on_click_started=mark_click_started)
             if on_submitted is not None:
                 on_submitted()
             self._wait(lambda _: not self._visible(self.driver, '.w-edit-task-dialog'),

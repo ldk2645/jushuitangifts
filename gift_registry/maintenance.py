@@ -8,6 +8,7 @@ from pathlib import Path
 from .daily_export import export_daily
 from .registration import row_signature
 from .sessions import atomic_write
+from .diagnostics import diagnose
 
 CHINA = timezone(timedelta(hours=8))
 
@@ -24,13 +25,17 @@ class MaintenanceService:
         self.stop = threading.Event()
         self.lock = threading.RLock()
         self.thread = None
+        self.last_fault = None
 
     def _read(self):
-        if self.path.exists():
+        try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-            if data.get("version") != 1:
+            if not isinstance(data, dict) or data.get("version") != 1:
                 raise ValueError("后台定时任务配置版本不正确")
+            datetime.strptime(data['next_day'], '%Y-%m-%d')
             return data
+        except FileNotFoundError:
+            pass
         current = self.clock().astimezone(CHINA)
         next_day = current.date() + timedelta(days=int(current.hour >= 1))
         return {"version": 1, "next_day": next_day.isoformat(), "last_error": "", "review_export_cursor": ""}
@@ -40,8 +45,15 @@ class MaintenanceService:
 
     def status(self):
         with self.lock:
-            state = self._read()
-            return {"next_run": state["next_day"] + "T01:00:00+08:00", "last_export_day": state.get("last_export_day"),
+            try:
+                state = self._read()
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                self.last_fault = diagnose(self.directory, 'maintenance', 'read_cursor', exc)
+                state = {}
+            return {"next_run": state.get("next_day", "") + "T01:00:00+08:00" if state else None,
+                    "health": "degraded" if self.last_fault else "ok", "needs_attention": bool(self.last_fault),
+                    "diagnostic": self.last_fault, "archive_enabled": bool(state) and not self.last_fault,
+                    "last_export_day": state.get("last_export_day"),
                     "last_removed_count": state.get("last_removed_count", 0), "last_error": state.get("last_error", ""),
                     "export_directory": str(self.exports)}
 
@@ -52,12 +64,20 @@ class MaintenanceService:
         return path
 
     def tick(self):
-        with self.lock:
-            state = self._read()
-            if not self.path.exists():
-                self._save(state)  # 首次启用从下一个 01:00 开始；后续重启按此日期补做。
-            current = self.clock().astimezone(CHINA)
+        # Read-only reviews do not depend on the archive cursor or archive lock.
+        current = self.clock().astimezone(CHINA)
+        try:
             self.jobs.enqueue_due_reviews(current)
+        except Exception as exc:
+            diagnose(self.directory, 'maintenance', 'schedule_reviews', exc)
+        with self.lock:
+            try:
+                state = self._read()
+                if not self.path.exists():
+                    self._save(state)
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                self.last_fault = diagnose(self.directory, 'maintenance', 'read_cursor', exc)
+                return
             try:
                 # 与普通开始登记保持同样的锁顺序；清理不会与快照创建交错。
                 with self.rows.lock, self.jobs.lock:
@@ -88,7 +108,9 @@ class MaintenanceService:
                                         and status.get("signature") == row_signature(row)
                                         and datetime.fromisoformat(status["updated_at"]) <= cutoff)
                             (removed if eligible else kept).append(row)
-                        if removed:
+                        # A clock tick may export, but never authorizes deleting a draft.
+                        # Explicit archive reconciliation is a separate maintenance action.
+                        if removed and state.get('cleanup_authorized') is True:
                             backup = self.directory / "draft_archive" / f"before-cleanup-{cutoff.date().isoformat()}.json"
                             payload = json.dumps(document, ensure_ascii=False, indent=2).encode("utf-8")
                             if backup.exists() and backup.read_bytes() != payload:
@@ -101,25 +123,28 @@ class MaintenanceService:
                                 raise ValueError("清理前草稿备份不一致")
                             self.rows.write(document["revision"], kept)
                         state.update(next_day=(cutoff.date() + timedelta(days=1)).isoformat(),
-                                     last_export_day=day.isoformat(), last_removed_count=len(removed))
+                                     last_export_day=day.isoformat(), last_removed_count=0,
+                                     cleanup_candidates=len(removed))
                     state["last_error"] = ""
                     self._save(state)
+                    self.last_fault = None
             except Exception as exc:
+                self.last_fault = diagnose(self.directory, 'maintenance', 'archive', exc)
                 state["last_error"] = f"后台归档未完成（{type(exc).__name__}），保留表格并稍后重试"
-                self._save(state)
+                try:
+                    self._save(state)
+                except OSError as save_exc:
+                    diagnose(self.directory, 'maintenance', 'save_error', save_exc)
 
     def start(self):
         if self.thread is not None:
             return
-        with self.lock:
-            if not self.path.exists():
-                self._save(self._read())
         def work():
             while not self.stop.is_set():
                 try:
                     self.tick()
-                except Exception:
-                    pass  # 下次定时检查继续；不触发登记重试，不记录敏感异常原文。
+                except Exception as exc:
+                    self.last_fault = diagnose(self.directory, 'maintenance', 'loop', exc)
                 self.stop.wait(30)
         self.thread = threading.Thread(target=work, name="gift-maintenance", daemon=True)
         self.thread.start()

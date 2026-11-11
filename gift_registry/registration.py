@@ -13,6 +13,7 @@ from pathlib import Path
 from .config import ROOT
 from .platform_operations import SeleniumOperations
 from .sessions import atomic_write
+from .diagnostics import diagnose
 from .workflow import (PlatformOperationError, Workflow, GiftRecord, OrderSnapshot, SubmissionReceipt,
                        request_from_row, validate_snapshot, validate_receipt, verify_new_records, verify_added_records)
 
@@ -153,6 +154,7 @@ class RegistrationQueue:
         self.pending = queue.Queue()
         self.worker = None
         self.scheduled = set()
+        self._claimed = None
         self._closed = False
         self._stopping = False
         self._directory_lock = _QueueDirectoryLock(self.directory)
@@ -163,7 +165,14 @@ class RegistrationQueue:
             for path in (self.directory / "auto_reviews").glob("*.json"):
                 record = json.loads(path.read_text(encoding="utf-8"))
                 if record.get("status") in {"queued", "running"}:
-                    record.update(status="interrupted", detail="自动复核中断，未重复查询或提交")
+                    completed = next((r for r in self._attempt_records()
+                                      if r['failure_id'] == record.get('execution_id') and r['item'].get('review_result')), None)
+                    if completed:
+                        result = completed['item']['review_result']
+                        record.update(status='done', success=bool(result['success']), completed_at=result['at'],
+                                      detail=result['detail'], log_day=datetime.fromisoformat(completed['completed_at']).date().isoformat())
+                    else:
+                        record.update(status="interrupted", detail="自动复核中断，未重复查询或提交")
                     atomic_write(path, json.dumps(record, ensure_ascii=False).encode("utf-8"))
         except BaseException:
             self._directory_lock.close()
@@ -201,6 +210,12 @@ class RegistrationQueue:
 
     def _load(self, path):
         job = json.loads(path.read_text(encoding="utf-8"))
+        if (not isinstance(job, dict) or not isinstance(job.get('rows'), list)
+                or ('items' in job and (not isinstance(job['items'], list) or len(job['items']) != len(job['rows'])))):
+            raise ValueError('任务文件结构不一致；保留原记录，禁止执行')
+        if 'items' in job and any(not isinstance(item, dict) or item.get('row_id') != row.get('id')
+                                  for row, item in zip(job['rows'], job['items'])):
+            raise ValueError('任务行身份不一致；保留原记录，禁止执行')
         if "items" not in job:
             job["items"] = [self._item(row) for row in job["rows"]]
             legacy_version = ("version" not in job
@@ -269,9 +284,9 @@ class RegistrationQueue:
         if callable(release):
             try:
                 release()
-            except Exception:
+            except Exception as exc:
                 # 只做资源清理，不能覆盖任务结果或暴露底层异常中的登录信息。
-                pass
+                diagnose(self.directory, 'queue', 'release_start', exc)
 
     def _recover_interrupted(self):
         for path in self._paths():
@@ -280,9 +295,18 @@ class RegistrationQueue:
             for row, item in zip(job["rows"], job["items"]):
                 if item["state"] in ACTIVE:
                     item.setdefault("display_updated_at", item.get("updated_at", job["created_at"]))
-                    item.update(state="failed", detail="上次任务中断，结果需人工核查；未自动重试登记", updated_at=now())
-                    self._schedule_review(item, row)
-                    item.setdefault("events", []).append({"state": "failed", "at": now(), "detail": item["detail"]})
+                    safe = (item.get('submit_attempted') is False and item.get('attempts') == 0
+                            and not item.get('evidence', {}).get('submit_clicked')
+                            and item.get('submission_status') in {None, 'not_submitted'})
+                    if item['state'] == 'queued' and safe and not item.get('claimed_at'):
+                        item.update(state='waiting_for_workflow', submission_status='not_submitted',
+                                    detail='上次任务未领取；等待主机明确开始，未自动执行', updated_at=now())
+                    else:
+                        status = 'not_submitted' if item['state'] == 'querying' and safe else 'uncertain'
+                        item.update(state="failed", submission_status=status,
+                                    detail="上次任务中断，保留提交依据；未自动重试登记", updated_at=now())
+                        self._schedule_review(item, row)
+                    item.setdefault("events", []).append({"state": item['state'], "at": now(), "detail": item["detail"]})
                     interrupted = True
             if interrupted:
                 self._save(path, job)
@@ -552,7 +576,7 @@ class RegistrationQueue:
     def enqueue_due_reviews(self, current_time):
         """后台调度只把到期的只读复核放进原串行队列；绝不派发登记。"""
         with self.lock:
-            if self._closed or self._stopping or not self.configured or self.pending.unfinished_tasks:
+            if self._closed or self._stopping or not self.configured:
                 return 0
             scheduled = 0
             for record in self._latest_attempts():
@@ -567,13 +591,19 @@ class RegistrationQueue:
                 path = self.directory / "auto_reviews" / (hashlib.sha256(identity.encode()).hexdigest() + ".json")
                 if path.exists():
                     continue
+                reason = self._review_ineligible(record)
+                if reason:
+                    atomic_write(path, json.dumps({'execution_id': identity, 'status': 'manual_required',
+                                                  'due_at': due, 'detail': reason}, ensure_ascii=False).encode())
+                    continue
                 prepare = getattr(self.operations, "prepare_start", None)
                 try:
                     if callable(prepare):
                         prepare()
                     atomic_write(path, json.dumps({"execution_id": identity, "status": "queued", "due_at": due},
                                                  ensure_ascii=False).encode("utf-8"))
-                except Exception:
+                except Exception as exc:
+                    diagnose(self.directory, 'review', 'claim', exc, identity)
                     if not self.pending.unfinished_tasks:
                         self._release_unused_start()
                     break
@@ -586,6 +616,29 @@ class RegistrationQueue:
                 self.worker.start()
             return scheduled
 
+    @staticmethod
+    def _review_ineligible(record):
+        item = record['item']
+        if item.get('submission_status') == 'not_submitted':
+            return '此前明确未提交，不执行自动核验'
+        evidence = item.get('evidence', {})
+        raw = evidence.get('before_snapshot')
+        if not raw:
+            return '缺少本次登记的完整原始基线，不能自动确认成功'
+        try:
+            request = request_from_row(record['row'], record['catalog'])
+            if raw.get('recipient') is not None or request.recipient is not None:
+                return '原始基线不支持自动核验'
+            before = OrderSnapshot(raw['order_no'], raw['found'], tuple(GiftRecord(**r) for r in raw['records']))
+            validate_snapshot(before, request.order_no)
+            receipt = SubmissionReceipt(**evidence['receipt'])
+            validate_receipt(receipt)
+            if receipt.accepted is not True or not before.found:
+                return '缺少有效提交回执或原始订单，不执行自动核验'
+        except (ValueError, TypeError, KeyError, PlatformOperationError):
+            return '缺少有效回执或关联证据，保留待人工核查，禁止重提'
+        return ''
+
     def _review_once(self, path):
         review = json.loads(path.read_text(encoding="utf-8"))
         identity = review["execution_id"]
@@ -594,6 +647,11 @@ class RegistrationQueue:
             if record is None or record["item"]["state"] != "failed":
                 review.update(status="skipped", detail="已有更新的登记结果，未查询或提交")
                 atomic_write(path, json.dumps(review, ensure_ascii=False).encode("utf-8"))
+                return
+            reason = self._review_ineligible(record)
+            if reason:
+                review.update(status='manual_required', detail=reason)
+                atomic_write(path, json.dumps(review, ensure_ascii=False).encode())
                 return
             review.update(status="running", started_at=now())
             atomic_write(path, json.dumps(review, ensure_ascii=False).encode("utf-8"))
@@ -779,7 +837,8 @@ class RegistrationQueue:
                         item.update(state="queued", detail="等待执行", updated_at=now())
             try:
                 self._save(path, job)
-            except Exception:
+            except Exception as exc:
+                diagnose(self.directory, 'queue', 'worker', exc, str(path))
                 if prepared and not self.pending.unfinished_tasks:
                     self._release_unused_start()
                 raise
@@ -803,8 +862,9 @@ class RegistrationQueue:
                     self._review_once(path[1])
                 else:
                     self._process(path)
-            except Exception:
+            except Exception as exc:
                 # 编排异常也不重新入队；尽力记失败后继续处理其他独立任务。
+                diagnose(self.directory, 'queue', 'worker', exc, str(path))
                 try:
                     with self.lock:
                         if isinstance(path, tuple):
@@ -813,13 +873,13 @@ class RegistrationQueue:
                             atomic_write(path[1], json.dumps(review, ensure_ascii=False).encode("utf-8"))
                             continue
                         job = self._load(path)
-                        for row, item in zip(job["rows"], job["items"]):
-                            if item["state"] not in TERMINAL:
+                        for index, (row, item) in enumerate(zip(job["rows"], job["items"])):
+                            if self._claimed == (path.name, index) and item["state"] not in TERMINAL:
                                 item.update(state="failed", detail="任务处理异常，请人工核查；未自动重试登记", updated_at=now())
                                 self._schedule_review(item, row)
                         self._save(path, job)
-                except (OSError, ValueError):
-                    pass
+                except (OSError, ValueError) as save_exc:
+                    diagnose(self.directory, 'queue', 'record_failure', save_exc, str(path))
             finally:
                 with self.lock:
                     self.scheduled.discard(path[0] if isinstance(path, tuple) else path.name)
@@ -827,6 +887,7 @@ class RegistrationQueue:
                     if self.pending.unfinished_tasks == 1:
                         self._release_unused_start()
                     self.pending.task_done()
+                    self._claimed = None
 
     def _process(self, path):
         with self.lock:
@@ -849,9 +910,10 @@ class RegistrationQueue:
                     continue
                 # 领取与取消使用同一把锁，释放锁前落盘，关闭“仍显示排队但已执行”的竞态窗口。
                 stamp = now()
-                item.update(state="querying", detail="已领取，正在开始订单核查", updated_at=stamp)
+                item.update(state="querying", detail="已领取，正在开始订单核查", updated_at=stamp, claimed_at=stamp)
                 item.setdefault("events", []).append({"state": "querying", "at": stamp, "detail": item["detail"]})
                 self._save(path, current)
+                self._claimed = (path.name, index)
 
             def report(state, **updates):
                 with self.lock:
@@ -876,3 +938,22 @@ class RegistrationQueue:
                     report("querying", detail="主机重登核查通过，班牛暂无该订单任务",
                            evidence={"retry_checked": True})
             Workflow(self.operations).execute(row, job["gift_catalog"], report, before_submit=guard)
+            self._claimed = None
+            self._service_review_boundary()
+
+    def _service_review_boundary(self):
+        """At most one already claimed review between orders, on the SAME worker."""
+        with self.pending.mutex:
+            review = next((entry for entry in self.pending.queue if isinstance(entry, tuple)), None)
+            if review is not None:
+                self.pending.queue.remove(review)
+        if review is None:
+            return
+        try:
+            self._review_once(review[1])
+        except Exception as exc:
+            diagnose(self.directory, 'review', 'order_boundary', exc, review[0])
+        finally:
+            with self.lock:
+                self.scheduled.discard(review[0])
+                self.pending.task_done()

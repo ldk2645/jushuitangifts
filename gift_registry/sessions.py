@@ -4,6 +4,7 @@ import ctypes
 import json
 import os
 import time
+import tempfile
 from ctypes import wintypes
 from pathlib import Path
 
@@ -38,10 +39,29 @@ def _crypt(payload: bytes, decrypt: bool = False) -> bytes:
 
 
 def atomic_write(path: Path, content: bytes):
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_bytes(content)
-    temporary.replace(path)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix='.' + path.name + '-', suffix='.tmp',
+                                         dir=path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # Windows readers may briefly deny replacement; retry only the filesystem
+        # rename of the already flushed bytes, never any business operation.
+        for attempt in range(10):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError as exc:
+                if getattr(exc, 'winerror', None) not in {5, 32, 33} or attempt == 9:
+                    raise
+                time.sleep(.005)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 class SessionStore:
