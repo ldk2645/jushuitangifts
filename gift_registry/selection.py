@@ -98,6 +98,8 @@ class SelectionPolicy:
             entries = prior.get('events', [])
             if scope and added:
                 entries = [*entries, {'gift_ids': sorted(added), **deepcopy(scope)}][-100:]
-            row['gift_selection'] = {'source': 'confirmed', 'gift_ids': list(ids),
+            unresolved = bool(row.get('gift_unmatched'))
+            row['gift_selection'] = {'source': 'unresolved' if unresolved else 'confirmed',
+                'confirmed': not unresolved, 'gift_ids': list(ids),
                 'label': '、'.join(known[i]['name'] for i in ids if i in known), 'events': entries, 'origins': origins}
         return rows

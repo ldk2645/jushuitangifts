@@ -177,7 +177,7 @@ function newRowId() {
 function newRow() {
   return { id: newRowId(), order_no: "", gift: "", gift_ids: [], change_address: false, gift_unmatched: [] };
 }
-function normalizeGift(text) { return text.toLowerCase().replace(/[^\p{L}\p{N}]/gu, ""); }
+function normalizeGift(text) { return text.normalize("NFKC").toLowerCase().replace(/[\s\u200b]+/gu, "").replace(/[，、]/gu, ",").replace(/[‐‑–—]/gu, "-"); }
 function similarity(a, b) {
   let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
   for (let i = 1; i <= a.length; i++) {
@@ -208,74 +208,48 @@ let giftMatcher = null;
 function matchingContext() {
   const scopeKey = JSON.stringify([selectedGiftGroup, giftGroups.revision, catalogVersion, scopeInvalid]);
   if (giftMatcher?.catalog === giftCatalog && giftMatcher.scopeKey === scopeKey) return giftMatcher;
-  const exact = new Map(), codes = new Map(), entries = [], protectedLabels = [];
-  let maxWords = 8;
-  for (const gift of scopedGifts()) {
+  const exact = new Map(), codes = new Map(), protectedLabels = [], labels = [];
+  const allowed = new Set(scopedGifts().map(gift => gift.id));
+  let maxWords = 1;
+  for (const gift of giftCatalog) {
     codes.set(gift.id, gift.id);
-    const labels = [gift.name, ...(gift.aliases || [])];
-    entries.push({ gift, labels: [...new Set(labels.map(normalizeGift).filter(Boolean))] });
-    for (const label of labels) {
+    for (const label of [gift.id, gift.name, ...(gift.aliases || [])]) {
       const key = normalizeGift(label);
+      if (!key) continue;
       if (!exact.has(key)) exact.set(key, new Set());
       exact.get(key).add(gift.id);
-      maxWords = Math.max(maxWords, label.trim().split(/\s+/u).length + 2);
+      labels.push(key);
+      maxWords = Math.max(maxWords, label.trim().split(/\s+/u).length);
       if (/[,，、;；+＋|｜\n]/u.test(label)) {
-        const pattern = label.trim().split(/\s+/u).map(part => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+");
-        protectedLabels.push({ label, pattern: new RegExp(`^(?:${pattern})`, "iu") });
+        const escaped = label.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/gu, "\\s*");
+        protectedLabels.push({label, pattern: new RegExp(`^(?:${escaped})`, "iu")});
       }
     }
   }
-  for (const gift of giftCatalog) {
-    const escaped = gift.id.replace(/[.*+?^$()|[\]{}\\]/g, "\\$&");
-    protectedLabels.push({label: gift.id, pattern: new RegExp("^(?:" + escaped + ")", "u")});
-  }
   protectedLabels.sort((a, b) => b.label.length - a.label.length);
-  giftMatcher = { scopeKey, catalog: giftCatalog, size: giftCatalog.length, exact, codes, entries, protectedLabels, maxWords, parts: new Map(), results: new Map() };
+  giftMatcher = {scopeKey, catalog: giftCatalog, exact, codes, allowed, labels: [...new Set(labels)],
+    protectedLabels, maxWords, parts: new Map(), results: new Map()};
   return giftMatcher;
 }
-function resolveGiftPart(text, strict = false) {
-  const context = matchingContext(), value = normalizeGift(text), key = `${strict ? "phrase" : "word"}:${text.trim()}`;
-  if (context.parts.has(key)) return context.parts.get(key);
-  const exact = context.exact.get(value);
-  let result;
-  if (giftCatalog.some(gift => gift.id === text.trim()) && !context.codes.has(text.trim())) result = { id: null, score: 0, exact: true };
-  else if (context.codes.has(text.trim())) result = { id: context.codes.get(text.trim()), score: 1, exact: true };
-  else if (isGiftCodeInput(text)) result = {id: null, score: 0, exact: true};
-  else if (exact) result = { id: exact.size === 1 ? [...exact][0] : null, score: exact.size === 1 ? 1 : 0, exact: true };
-  else {
-    const matches = context.entries.map(({ gift, labels }) => {
-      // 跨空格的短语必须整体相似，不能只因包含一个已知简称就吞掉其他礼品。
-      const meaningful = value.length >= 3 || labels.some(label => Math.min(value.length, label.length) / Math.max(value.length, label.length, 1) >= .5);
-      const score = strict ? Math.max(0, ...labels.map(label => {
-        const coverage = Math.min(value.length, label.length) / Math.max(value.length, label.length, 1);
-        if (value.length >= 3 && coverage >= .65 && label.includes(value)) return giftLabelScore(value, label);
-        return coverage >= .8 ? similarity(value, label) * .9 : 0;
-      })) : meaningful ? giftScore(text, gift) : 0;
-      return { id: gift.id, score };
-    }).sort((a, b) => b.score - a.score);
-    const best = matches[0], next = matches[1];
-    result = best && best.score >= (strict ? .72 : .59) && (!next || best.score - next.score >= .08)
-      ? best : { id: null, score: 0 };
-    if (strict && result.id) {
-      const coverage = context.entries.map(({ gift, labels }) => ({ id: gift.id, score: Math.max(0, ...labels.map(label =>
-        Math.min(value.length, label.length) / Math.max(value.length, label.length, 1) >= .65 ? giftLabelScore(value, label) : 0)) }))
-        .sort((a, b) => b.score - a.score);
-      if (coverage[0]?.id !== result.id || (coverage[1] && coverage[0].score - coverage[1].score < .08)) result = { id: null, score: 0 };
-    }
-  }
-  if (context.parts.size > 3000) context.parts.clear();
-  context.parts.set(key, result);
+function resolveGiftPart(text) {
+  const context = matchingContext(), value = normalizeGift(text);
+  if (context.parts.has(text)) return context.parts.get(text);
+  // Literal codes win over colliding display labels; normalized code collisions stay ambiguous.
+  const candidates = context.codes.has(text.trim()) ? new Set([text.trim()]) : context.exact.get(value);
+  const code = candidates?.size === 1 ? [...candidates][0] : null;
+  const result = {id: code && context.allowed.has(code) ? code : null, exact: Boolean(candidates),
+    outside: Boolean(code && !context.allowed.has(code)), score: code && context.allowed.has(code) ? 1 : 0};
+  if (context.parts.size > 4000) context.parts.clear();
+  context.parts.set(text, result);
   return result;
 }
 function splitGiftParts(text) {
-  // 逗号等为强分隔符；已知名称内部的标点和空格先保留。
-  const delimiter = /[,，、;；+＋|｜\n]/;
-  const { protectedLabels } = matchingContext();
+  const delimiter = /[,，、;；+＋|｜\n]/u, {protectedLabels} = matchingContext();
   const parts = []; let part = "";
   for (let index = 0; index < text.length;) {
     let protectedText = null;
     if (!part.trim()) {
-      for (const { pattern } of protectedLabels) {
+      for (const {pattern} of protectedLabels) {
         const matched = pattern.exec(text.slice(index))?.[0], next = matched ? text[index + matched.length] : null;
         if (matched && (!next || delimiter.test(next) || /\s/u.test(next))) { protectedText = matched; break; }
       }
@@ -288,50 +262,40 @@ function splitGiftParts(text) {
   return parts;
 }
 function matchSpaceGiftParts(text) {
-  const whole = resolveGiftPart(text), words = text.trim().split(/\s+/u);
-  // 完整名称、编码或别名不因内部空格而被拆开；歧义的完整名称也保留待确认。
-  if (words.length === 1 || whole.exact) return [{ text, match: whole }];
-  const context = matchingContext(), plans = Array(words.length + 1);
-  plans[words.length] = { weight: 0, count: 0 };
+  const whole = resolveGiftPart(text), words = text.trim().split(/\s+/u), context = matchingContext();
+  if (whole.exact || words.length < 2 || words.length > 80) return [{text, match: whole}];
+  // A near-complete catalogue label protects a typo from being split into unrelated exact aliases.
+  const value = normalizeGift(text);
+  if (context.labels.some(label => Math.min(label.length, value.length) / Math.max(label.length, value.length) >= .8
+      && similarity(value, label) >= .8)) return [{text, match: whole}];
+  const plans = Array.from({length: words.length + 1}, () => []);
+  plans[words.length] = [[]];
   for (let start = words.length - 1; start >= 0; start--) {
-    const single = resolveGiftPart(words[start]);
-    let best = { weight: normalizeGift(words[start]).length * single.score + plans[start + 1].weight,
-      count: plans[start + 1].count + 1, end: start + 1, text: words[start], match: single };
-    for (let end = start + 2; end <= Math.min(words.length, start + context.maxWords); end++) {
-      const phrase = words.slice(start, end).join(" "), match = resolveGiftPart(phrase, true);
+    for (let end = start + 1; end <= Math.min(words.length, start + context.maxWords); end++) {
+      const phrase = words.slice(start, end).join(" "), match = resolveGiftPart(phrase);
       if (!match.id) continue;
-      const candidate = { weight: normalizeGift(phrase).length * match.score + plans[end].weight,
-        count: plans[end].count + 1, end, text: phrase, match };
-      if (candidate.weight > best.weight + .000001 || (Math.abs(candidate.weight - best.weight) <= .000001 && candidate.count < best.count)) best = candidate;
+      for (const tail of plans[end]) {
+        plans[start].push([{text: phrase, match}, ...tail]);
+        if (plans[start].length >= 2) break;
+      }
+      if (plans[start].length >= 2) break;
     }
-    plans[start] = best;
   }
-  const parts = [];
-  for (let start = 0; start < words.length;) {
-    const plan = plans[start], previous = parts.at(-1);
-    if (!plan.match.id && previous && !previous.match.id) previous.text += ` ${plan.text}`;
-    else parts.push({ text: plan.text, match: plan.match });
-    start = plan.end;
-  }
-  return parts;
+  return plans[0].length === 1 ? plans[0][0] : [{text, match: whole}];
 }
 function matchGifts(text) {
   const context = matchingContext(), cached = context.results.get(text);
-  if (cached) return { ids: [...cached.ids], unmatched: [...cached.unmatched] };
-  if (giftCatalog.some(gift => normalizeGift(gift.id) === normalizeGift(text.trim()))) {
-    const match = resolveGiftPart(text);
-    return {ids: match.id ? [match.id] : [], unmatched: match.id ? [] : [text.trim()]};
-  }
-  const ids = [], unmatched = [];
-  for (const part of splitGiftParts(text)) {
-    for (const segment of matchSpaceGiftParts(part)) {
-      if (segment.match.id) { if (!ids.includes(segment.match.id)) ids.push(segment.match.id); }
-      else unmatched.push(segment.text);
-    }
+  if (cached) return {ids: [...cached.ids], unmatched: [...cached.unmatched]};
+  const whole = resolveGiftPart(text), ids = [], unmatched = [];
+  const parts = whole.exact ? [{text: text.trim(), match: whole}]
+    : splitGiftParts(text).flatMap(matchSpaceGiftParts);
+  for (const segment of parts) {
+    if (segment.match.id) { if (!ids.includes(segment.match.id)) ids.push(segment.match.id); }
+    else if (segment.text) unmatched.push(segment.text);
   }
   if (context.results.size > 2000) context.results.clear();
-  context.results.set(text, { ids: [...ids], unmatched: [...unmatched] });
-  return { ids, unmatched };
+  context.results.set(text, {ids: [...ids], unmatched: [...unmatched]});
+  return {ids, unmatched};
 }
 function giftNames(ids) { return ids.map(id => giftCatalog.find(gift => gift.id === id)?.name).filter(Boolean); }
 function unresolvedGiftLabels(row) {
@@ -353,7 +317,7 @@ function assignGifts(row, ids, unmatched = []) {
   row.gift_unmatched = [...unmatched];
   row.gift = [...giftNames(unique), ...unmatched].join("、");
   row.selection_scope = currentScope();
-  row.gift_selection = {source: "confirmed", gift_ids: [...unique], label: giftNames(unique).join("、")};
+  row.gift_selection = {source: unmatched.length ? "unresolved" : "confirmed", confirmed: !unmatched.length, gift_ids: [...unique], label: giftNames(unique).join("、")};
 }
 function rowSignature(row) { return JSON.stringify([row.id, row.order_no.trim(), [...new Set(row.gift_ids || [])].sort(), row.change_address || false, row.gift_unmatched || []]); }
 function taskIdentity(row) { return JSON.stringify([row.order_no.trim(), [...new Set(row.gift_ids || [])].sort()]); }

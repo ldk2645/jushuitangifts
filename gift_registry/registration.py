@@ -126,7 +126,9 @@ def registration_rows(rows, gifts):
         ids = row.get("gift_ids", [])
         if not ids or any(identifier not in names for identifier in ids):
             missing.append("有效礼品选项")
-        elif row.get("gift_unmatched") or (not row.get("gift_selection") and row["gift"] != "、".join(names[identifier] for identifier in ids)):
+        elif (row.get("gift_unmatched") or row.get("gift_selection", {}).get("confirmed") is False
+              or row.get("gift_selection", {}).get("source") == "unresolved"
+              or (not row.get("gift_selection") and row["gift"] != "、".join(names[identifier] for identifier in ids))):
             missing.append("未匹配的礼品需重新选择")
         if row.get("change_address", False):
             missing.append("旧草稿请求改地址，本版本不支持；请核对原意后删除该行并新建原地址订单")
