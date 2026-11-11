@@ -1,0 +1,38 @@
+Baseline command: python -m unittest discover -s tests -v
+Baseline source: 29c680bd8b6793a5721b7b116987713df8e96453
+
+----------------------------------------------------------------------
+Ran 578 tests in 70.900s
+
+OK
+
+Final command: python -m unittest discover -s tests -v
+Final core source: 191bfc3c8bf7051ae0d7cffaa82041b881a6e2c8
+
+----------------------------------------------------------------------
+Ran 596 tests in 74.799s
+
+OK
+
+Browser command: python tests/smoke_frontend.py
+PASS: three columns; old true draft blocked; hidden recipients absent; remote host controls denied.
+PASS: independent preferences, exact scope, same-name ambiguity, multi-membership, empty groups, refresh; existing selections unchanged.
+PASS: scoped picker keeps original codes; structured copy, formula input and expanding regional paste enforce scope.
+PASS: old clipboard true/false compatibility, privacy, formula/navigation status column C.
+PASS: catalog rename retains success; changed/deleted group pauses new matching without fallback or clearing existing selections.
+PASS: older poll cannot overwrite newer state; no browser-triggered business submission; screenshot saved.
+PASS: full SKU strings only; case, leading zeros, punctuation and typos never fuzzy-match; names/aliases still work.
+PASS: native fill-handle drag copies confirmed codes and preserves IDs/orders; one undo restores all targets.
+PASS: multi-row repeat, Ctrl+D, adjacent-column double-click fill; no status/address copying or numeric increments.
+PASS: Esc cancels; out-of-group and invalid scopes reject the whole fill; unresolved input remains unresolved.
+PASS: three-column keyboard wrapping, persisted selections and zero platform calls.
+PASS: current main frontend acceptance (large grids, two clients, native fill gestures).
+
+Matcher command: node tests/core_matcher_checks.cjs ../merged-usb-111-zw7v2tcm
+Recorded stdout:
+Read-only supplied catalog: reported safety examples passed (14-case file absent).
+18 synthetic cases and 1100 deterministic repeated rows passed.
+
+Downgrade command: python tools/check_core_downgrade.py --legacy-repo .tmp/core-baseline
+Recorded stdout:
+PASS: original main blocks retry of unmerged synthetic submission; no platform calls.

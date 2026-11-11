@@ -1,0 +1,122 @@
+{
+  "sku_count": 255,
+  "names_with_spaces": 106,
+  "results": [
+    {
+      "version": "before",
+      "group": "xiaomi-phone",
+      "input": "小充电宝 10000mAh 22.5W",
+      "result": {
+        "ids": [
+          "N01B0101021V00GK01",
+          "N01B0101021V00AF01"
+        ],
+        "unmatched": []
+      }
+    },
+    {
+      "version": "before",
+      "group": "xiaomi-phone",
+      "input": "Xiaomi Pad 9 保护壳",
+      "result": {
+        "ids": [
+          "N01B0101021V00GK01"
+        ],
+        "unmatched": [
+          "Pad 9 保护壳"
+        ]
+      }
+    },
+    {
+      "version": "before",
+      "group": "xiaomi-ecosystem",
+      "input": "小充电宝 10000mAh 22.5W",
+      "result": {
+        "ids": [
+          "N01B0101021V00GK01",
+          "N01B0101021V00AF01"
+        ],
+        "unmatched": []
+      }
+    },
+    {
+      "version": "before",
+      "group": "xiaomi-ecosystem",
+      "input": "Xiaomi Pad 9 保护壳",
+      "result": {
+        "ids": [],
+        "unmatched": [
+          "Xiaomi Pad 9 保护壳"
+        ]
+      }
+    },
+    {
+      "version": "before",
+      "group": "honor",
+      "input": "荣耀亲选 LCHSE 耳夹式耳机 黑色",
+      "result": {
+        "ids": [
+          "XS24AMA35002P65001"
+        ],
+        "unmatched": [
+          "荣耀亲选 LCHSE"
+        ]
+      }
+    },
+    {
+      "version": "after",
+      "group": "xiaomi-phone",
+      "input": "小充电宝 10000mAh 22.5W",
+      "result": {
+        "ids": [],
+        "unmatched": [
+          "小充电宝 10000mAh 22.5W"
+        ]
+      }
+    },
+    {
+      "version": "after",
+      "group": "xiaomi-phone",
+      "input": "Xiaomi Pad 9 保护壳",
+      "result": {
+        "ids": [],
+        "unmatched": [
+          "Xiaomi Pad 9 保护壳"
+        ]
+      }
+    },
+    {
+      "version": "after",
+      "group": "xiaomi-ecosystem",
+      "input": "小充电宝 10000mAh 22.5W",
+      "result": {
+        "ids": [],
+        "unmatched": [
+          "小充电宝 10000mAh 22.5W"
+        ]
+      }
+    },
+    {
+      "version": "after",
+      "group": "xiaomi-ecosystem",
+      "input": "Xiaomi Pad 9 保护壳",
+      "result": {
+        "ids": [],
+        "unmatched": [
+          "Xiaomi Pad 9 保护壳"
+        ]
+      }
+    },
+    {
+      "version": "after",
+      "group": "honor",
+      "input": "荣耀亲选 LCHSE 耳夹式耳机 黑色",
+      "result": {
+        "ids": [],
+        "unmatched": [
+          "荣耀亲选 LCHSE 耳夹式耳机 黑色"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+[
+  {
+    "dom_nodes": 1525,
+    "mounted_rows": 100,
+    "paste_ms": 17.700000002980232,
+    "rows": 100,
+    "valid": true
+  },
+  {
+    "dom_nodes": 2724,
+    "mounted_rows": 200,
+    "paste_ms": 30.299999997019768,
+    "rows": 500,
+    "valid": true
+  },
+  {
+    "dom_nodes": 2724,
+    "mounted_rows": 200,
+    "paste_ms": 29.69999999552965,
+    "rows": 1000,
+    "valid": true
+  },
+  {
+    "dom_nodes": 2724,
+    "mounted_rows": 200,
+    "paste_ms": 71,
+    "rows": 2000,
+    "valid": true
+  }
+]

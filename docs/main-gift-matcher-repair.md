@@ -7,3 +7,9 @@
 验证：`node tests/core_matcher_checks.cjs ../merged-usb-111-zw7v2tcm`。18 个合成案例、100/1000 行重复结果，以及只读提供目录中的报告示例通过。提供目录仅包含 gifts.json 和 gift_groups.local.json；未找到 gift_matching_regression_cases_main.json，不能声称真实 14/14。
 
 纯算法验证直接在 Node VM 中加载 app.js 的匹配函数，不执行页面或访问平台。保留原粘贴、撤销、历史选中编码及分组接口。
+
+已另将原 main 的匹配函数加载到同一 Node VM，用提供的只读目录复现 5 个报告输入/分组组合，其中 4 个旧版误选；修复版 5 个组合全部保留完整输入待确认。具体编码和 unmatched 对照见 `matcher-supplied-fixture-results.json`。这 5 个组合不能替代缺失的 14 条期望文件。
+
+编码保留大小写、前导零和符号；NFKC 编码标准化使用候选集合，不能覆盖碰撞 SKU。字面精确编码仍可明确选择。选择器显示“商品不属于当前分组”，不把跨组完整名称拆成其他商品。
+
+本地可用隔离目录实测为 255 SKU、106 个含空格名称，与 prompt 的 260/108 样本描述不同。原始统计和摘要见证据矩阵；不得把本轮样本说成原始完整批次。

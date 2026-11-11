@@ -1,0 +1,22 @@
+{
+  "environment": "Windows-11-10.0.26300-SP0",
+  "python": "3.13.15 (tags/v3.13.15:4061bc4, Aug  5 2026, 13:05:39) [MSC v.1944 64 bit (AMD64)]",
+  "rows": 1000,
+  "scenario": "execute",
+  "complete": false,
+  "accept_ms": 218.68240000185324,
+  "json_reads": 1360,
+  "json_read_bytes": 970823594,
+  "json_writes": 741,
+  "json_write_bytes": 441673928,
+  "full_job_reads": 1360,
+  "full_job_writes": 618,
+  "elapsed_seconds": 58.642834199999925,
+  "submissions": 123,
+  "peak_python_bytes": 12691311,
+  "metrics": {
+    "lock_max_wait_seconds": 0.056499199999962,
+    "lock_max_hold_seconds": 0.2526304999992135
+  },
+  "censored_after_seconds": 60
+}
