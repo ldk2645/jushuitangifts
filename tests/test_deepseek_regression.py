@@ -137,14 +137,14 @@ class QueueReliabilityRegressionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
             operations = FakeOperations()
             jobs = RegistrationQueue(folder, operations=operations)
-            original_save = jobs._save
+            original_save = jobs._save_item
 
-            def failing_save(path, job):
-                if any(item["state"] == "submitting" for item in job["items"]):
+            def failing_save(path, job, index, item):
+                if item['state'] == 'submitting':
                     raise OSError("simulated storage failure")
-                original_save(path, job)
+                original_save(path, job, index, item)
 
-            jobs._save = failing_save
+            jobs._save_item = failing_save
             try:
                 jobs.start([sample()], load_gifts())
                 state = wait_finished(jobs, "row-1")

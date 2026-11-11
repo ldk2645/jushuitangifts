@@ -82,8 +82,8 @@ def main():
             choose(a, 'a'); choose(b, 'b')
             before = group_path.read_bytes()
             assert js("return matchGifts('SYN-B').ids") == []
-            assert js("return matchGifts('合成同名').ids") == ['SYN-A']
-            assert b.execute_script("return matchGifts('合成同名').ids") == ['SYN-B']
+            assert js("return matchGifts('合成同名').ids") == []  # Catalogue-wide ambiguity requires a code.
+            assert b.execute_script("return matchGifts('合成同名').ids") == []
             assert js("return matchGifts('SYN-C').ids") == ['SYN-C']
             choose(a, 'empty'); assert js("return matchGifts('SYN-A').ids") == []
             choose(a, ''); assert js("return matchGifts('合成同名').ids") == []

@@ -78,7 +78,14 @@ class HostManagement:
         with self.rows.lock, self.jobs.lock:
             if not isinstance(identifiers, list) or not identifiers or any(not isinstance(i, str) for i in identifiers):
                 raise ValueError("请选择当前表格中的失败订单")
-            allowed = {f["failure_id"] for f in self.retry_candidates()["failures"]}
+            if batch:
+                existing = self.jobs.existing_retry_batch(identifiers)
+                if existing is not None:
+                    return existing
+            candidates = self.retry_candidates()['failures']
+            allowed = {f['failure_id'] for f in candidates if not batch or f['eligible']}
+            if batch:
+                return self.jobs.accept_retry_batch(identifiers, allowed)
             if any(identifier not in allowed for identifier in identifiers):
                 raise ValueError("失败列表已变化：仅可重登当前表格中的失败订单，人工成功订单已排除，请刷新")
             result = (self.jobs.retry_all_failed(identifiers) if batch else self.jobs.retry_failed(identifiers[0]))

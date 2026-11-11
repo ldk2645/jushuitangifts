@@ -43,6 +43,26 @@ class MaintenanceService:
     def _save(self, state):
         atomic_write(self.path, json.dumps(state, ensure_ascii=False, indent=2).encode("utf-8"))
 
+    def repair_cursor(self, *, expected_sha256, next_day, review_export_cursor=''):
+        """Explicit maintenance action on an offline copy; no inferred cleanup cursor."""
+        datetime.strptime(next_day, '%Y-%m-%d')
+        if review_export_cursor:
+            datetime.fromisoformat(review_export_cursor)
+        with self.lock:
+            raw = self.path.read_bytes()
+            digest = hashlib.sha256(raw).hexdigest()
+            if digest != expected_sha256:
+                raise ValueError('维护文件已变化；未修复')
+            backup = self.directory / 'maintenance_backups' / (digest + '.json')
+            if backup.exists() and backup.read_bytes() != raw:
+                raise ValueError('维护备份不一致；未修复')
+            if not backup.exists():
+                atomic_write(backup, raw)
+            self._save({'version':1, 'next_day':next_day, 'review_export_cursor':review_export_cursor,
+                        'last_error':'', 'repaired_from_sha256':digest})
+            self.last_fault = None
+            return {'backup_sha256':digest, 'next_day':next_day}
+
     def status(self):
         with self.lock:
             try:
@@ -70,6 +90,19 @@ class MaintenanceService:
             self.jobs.enqueue_due_reviews(current)
         except Exception as exc:
             diagnose(self.directory, 'maintenance', 'schedule_reviews', exc)
+        self._archive_tick()
+
+    def reconcile_archive(self, expected_revision):
+        """Explicit operator action; never called by the timer or HTTP status.
+
+        Review the cursor and draft revision before calling on a maintenance copy.
+        A corrupt cursor remains blocked; it must be repaired separately.
+        """
+        self.jobs.enqueue_due_reviews(self.clock().astimezone(CHINA))
+        self._archive_tick(expected_revision=expected_revision)
+
+    def _archive_tick(self, expected_revision=None):
+        current = self.clock().astimezone(CHINA)
         with self.lock:
             try:
                 state = self._read()
@@ -81,6 +114,8 @@ class MaintenanceService:
             try:
                 # 与普通开始登记保持同样的锁顺序；清理不会与快照创建交错。
                 with self.rows.lock, self.jobs.lock:
+                    if expected_revision is not None and self.rows.read()['revision'] != expected_revision:
+                        raise ValueError('草稿版本已变化，未执行维护清理')
                     if self.jobs.pending.unfinished_tasks:
                         return
                     # 延迟复核改变已导出的历史结果时，更新对应日期文件。
@@ -110,7 +145,7 @@ class MaintenanceService:
                             (removed if eligible else kept).append(row)
                         # A clock tick may export, but never authorizes deleting a draft.
                         # Explicit archive reconciliation is a separate maintenance action.
-                        if removed and state.get('cleanup_authorized') is True:
+                        if removed and expected_revision is not None:
                             backup = self.directory / "draft_archive" / f"before-cleanup-{cutoff.date().isoformat()}.json"
                             payload = json.dumps(document, ensure_ascii=False, indent=2).encode("utf-8")
                             if backup.exists() and backup.read_bytes() != payload:
@@ -123,7 +158,7 @@ class MaintenanceService:
                                 raise ValueError("清理前草稿备份不一致")
                             self.rows.write(document["revision"], kept)
                         state.update(next_day=(cutoff.date() + timedelta(days=1)).isoformat(),
-                                     last_export_day=day.isoformat(), last_removed_count=0,
+                                     last_export_day=day.isoformat(), last_removed_count=len(removed) if expected_revision is not None else 0,
                                      cleanup_candidates=len(removed))
                     state["last_error"] = ""
                     self._save(state)

@@ -270,7 +270,8 @@ class DurableQueueTests(unittest.TestCase):
             path = Path(folder)
 
             def inspect_before_submit(_):
-                job = json.loads(next(path.glob("*.json")).read_text(encoding="utf-8"))
+                jobs._snapshot_cache.clear()  # Prove the disk snapshot + durable item overlay, not cached state.
+                job = jobs._load(next(path.glob("*.json")))
                 item = job["items"][0]
                 self.assertEqual(item["state"], "submitting")
                 self.assertTrue(item["submit_attempted"])

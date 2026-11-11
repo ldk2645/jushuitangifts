@@ -208,16 +208,21 @@ let giftMatcher = null;
 function matchingContext() {
   const scopeKey = JSON.stringify([selectedGiftGroup, giftGroups.revision, catalogVersion, scopeInvalid]);
   if (giftMatcher?.catalog === giftCatalog && giftMatcher.scopeKey === scopeKey) return giftMatcher;
-  const exact = new Map(), codes = new Map(), protectedLabels = [], labels = [];
+  const exact = new Map(), codes = new Map(), normalizedCodes = new Map(), protectedLabels = [], labels = [];
   const allowed = new Set(scopedGifts().map(gift => gift.id));
   let maxWords = 1;
   for (const gift of giftCatalog) {
     codes.set(gift.id, gift.id);
+    const codeKey = gift.id.normalize('NFKC').trim();
+    if (!normalizedCodes.has(codeKey)) normalizedCodes.set(codeKey, new Set());
+    normalizedCodes.get(codeKey).add(gift.id);
     for (const label of [gift.id, gift.name, ...(gift.aliases || [])]) {
       const key = normalizeGift(label);
       if (!key) continue;
-      if (!exact.has(key)) exact.set(key, new Set());
-      exact.get(key).add(gift.id);
+      if (label !== gift.id) {
+        if (!exact.has(key)) exact.set(key, new Set());
+        exact.get(key).add(gift.id);
+      }
       labels.push(key);
       maxWords = Math.max(maxWords, label.trim().split(/\s+/u).length);
       if (/[,，、;；+＋|｜\n]/u.test(label)) {
@@ -227,7 +232,7 @@ function matchingContext() {
     }
   }
   protectedLabels.sort((a, b) => b.label.length - a.label.length);
-  giftMatcher = {scopeKey, catalog: giftCatalog, exact, codes, allowed, labels: [...new Set(labels)],
+  giftMatcher = {scopeKey, catalog: giftCatalog, exact, codes, normalizedCodes, allowed, labels: [...new Set(labels)],
     protectedLabels, maxWords, parts: new Map(), results: new Map()};
   return giftMatcher;
 }
@@ -235,7 +240,9 @@ function resolveGiftPart(text) {
   const context = matchingContext(), value = normalizeGift(text);
   if (context.parts.has(text)) return context.parts.get(text);
   // Literal codes win over colliding display labels; normalized code collisions stay ambiguous.
-  const candidates = context.codes.has(text.trim()) ? new Set([text.trim()]) : context.exact.get(value);
+  const codeInput = text.normalize('NFKC').trim();
+  const candidates = context.codes.has(text.trim()) ? new Set([context.codes.get(text.trim())])
+    : context.normalizedCodes.get(codeInput) || context.exact.get(value);
   const code = candidates?.size === 1 ? [...candidates][0] : null;
   const result = {id: code && context.allowed.has(code) ? code : null, exact: Boolean(candidates),
     outside: Boolean(code && !context.allowed.has(code)), score: code && context.allowed.has(code) ? 1 : 0};
@@ -554,11 +561,13 @@ function renderGiftCell(cell, row, index) {
   button.type = "button"; button.className = "gift-trigger";
   button.setAttribute("aria-label", `第 ${index + 2} 行 礼品（可多选）`);
   button.setAttribute("aria-haspopup", "dialog"); button.setAttribute("aria-expanded", String(pickerRowId === row.id));
-  button.title = row.gift || "选择或粘贴多个礼品，可用中文逗号、英文逗号、顿号或空格分隔，自动模糊匹配名称或别名";
+  button.title = row.gift || "选择或粘贴多个礼品，仅精确且唯一的编码、名称或别名可自动确认";
   const chips = document.createElement("span"); chips.className = "gift-chips";
   const names = giftNames(row.gift_ids || []), unmatched = unresolvedGiftLabels(row);
   names.forEach((name, index) => { const chip = document.createElement("span"); chip.className = "gift-chip"; chip.textContent = name; chip.title = `${name}（${row.gift_ids[index]}）`; chips.append(chip); });
-  if (unmatched.length) { const chip = document.createElement("span"); chip.className = "gift-chip unmatched-chip"; chip.textContent = `未匹配：${unmatched.join("、")}`; chips.append(chip); }
+  if (unmatched.length) { const chip = document.createElement("span"); chip.className = "gift-chip unmatched-chip";
+    chip.textContent = `${unmatched.some(label => resolveGiftPart(label).outside) ? '商品不属于当前分组' : '未匹配'}：${unmatched.join("、")}`;
+    chips.append(chip); }
   if (!names.length && !unmatched.length) { const placeholder = document.createElement("span"); placeholder.className = "gift-placeholder"; placeholder.textContent = "选择礼品，可多选"; chips.append(placeholder); }
   const caret = document.createElement("span"); caret.className = "gift-caret"; caret.textContent = "⌄";
   button.append(chips, caret);
@@ -733,11 +742,28 @@ function statusNode(row) {
   }
   return node;
 }
+let gridPage = 0;
+const gridPageSize = 200;
 function render() {
   finishEditing();
   closeGiftPicker();
   displayedRows = rows.filter(row => !selectedStatus || status(row).type === selectedStatus);
-  const displayedIds = new Set(displayedRows.map(row => row.id));
+  gridPage = Math.max(0, Math.min(gridPage, Math.ceil(displayedRows.length / gridPageSize) - 1));
+  const displayedIds = new Set(displayedRows.slice(gridPage * gridPageSize, (gridPage + 1) * gridPageSize).map(row => row.id));
+  let pager = document.getElementById('grid-pager');
+  if (!pager) {
+    pager = document.createElement('div'); pager.id = 'grid-pager';
+    document.getElementById('row-summary').parentElement.append(pager);
+  }
+  pager.hidden = displayedRows.length <= gridPageSize;
+  pager.replaceChildren();
+  for (const [label, delta] of [['上一页', -1], ['下一页', 1]]) {
+    const button = document.createElement('button'); button.textContent = label; button.type = 'button';
+    button.disabled = delta < 0 ? gridPage === 0 : (gridPage + 1) * gridPageSize >= displayedRows.length;
+    button.addEventListener('click', () => { finishEditing(); gridPage += delta; render(); });
+    pager.append(button);
+  }
+  pager.append(document.createTextNode(` 第 ${gridPage + 1} / ${Math.max(1, Math.ceil(displayedRows.length / gridPageSize))} 页；复制、粘贴与选区保留全部行 `));
   const visible = columns();
   $("#grid-columns").replaceChildren();
   for (const field of ["row-number", ...visible]) {
@@ -897,6 +923,7 @@ function paintSelection(keepHandle = false) {
     }
     for (let row = bounds.top; row <= bounds.bottom; row++) {
       const tr = rowElement(gridRows()[row].id);
+      if (!tr) continue;  // Off-page selection remains in the data model.
       tr.firstElementChild.classList.add("selected-gutter"); selectedNodes.add(tr.firstElementChild);
       for (let col = bounds.left; col <= bounds.right; col++) {
         const cell = tr.children[col + 1];
@@ -950,6 +977,10 @@ function scrollCellIntoView(id, field) {
   }
 }
 function focusCell(id, field, keepSelection = false) {
+  const position = displayedRows.findIndex(row => row.id === id);
+  if (position >= 0 && Math.floor(position / gridPageSize) !== gridPage) {
+    gridPage = Math.floor(position / gridPageSize); render();
+  }
   const cell = fieldElement(id, field);
   if (!keepSelection && columns().includes(field)) selectRange({ id, field });
   const control = cell?.querySelector("input,.gift-trigger,.address-toggle") || cell;
@@ -1553,6 +1584,7 @@ async function refreshExecutionStates() {
       document.getElementById("connection-notice").hidden = true;
       document.getElementById("shutdown-notice").hidden = !result.server_stopping;
       if (epoch !== stateEpoch || hostManaging || starting || retrySubmitting) return;
+      const previousStates = rowStates;
       rowStates = result.row_states;
       if (Number.isInteger(result.draft_revision) && result.draft_revision > revision && !saving) {
         if (version === savedVersion && draftSyncAllowed()) {
@@ -1571,7 +1603,11 @@ async function refreshExecutionStates() {
       }
       const nextDisplayed = rows.filter(row => !selectedStatus || status(row).type === selectedStatus);
       if (!editing && !pickerRowId && !formulaEditing() && JSON.stringify(nextDisplayed.map(row => row.id)) !== JSON.stringify(displayedRows.map(row => row.id))) render();
-      for (const row of rows) rowElement(row.id)?.querySelector('[data-field="status"]').replaceChildren(statusNode(row));
+      for (const [id, node] of rowNodes) {
+        if (JSON.stringify(previousStates[id]) === JSON.stringify(rowStates[id])) continue;
+        const row = rows.find(row => row.id === id);
+        if (row) node.querySelector('[data-field="status"]').replaceChildren(statusNode(row));
+      }
       if (active?.field === "status") activate(active.id, active.field);
       updateSummary();
       scheduleColumnSizing();
@@ -1670,7 +1706,9 @@ $("#assign-groups").addEventListener("click", () => updateGroups({ action: "assi
 async function refreshMaintenanceStatus() {
   try {
     const status = await api("/api/maintenance/status"), label = $("#maintenance-summary"); label.hidden = false;
-    label.textContent = status.last_error || `北京时间每日 01:00 自动导出上一日日志并归档成功行。下次：${status.next_run.slice(0, 10)} 01:00。日志目录：${status.export_directory}${status.last_export_day ? `；最近导出 ${status.last_export_day}，清理 ${status.last_removed_count} 行` : ""}`;
+    label.textContent = status.needs_attention
+      ? `后台归档需要处理（${status.diagnostic?.error_type || '状态不可用'}）；到期只读复核独立调度。请在主机检查维护记录。`
+      : status.last_error || `北京时间每日 01:00 自动导出上一日日志，草稿保留。下次：${status.next_run?.slice(0, 10) || '待确认'} 01:00。日志目录：${status.export_directory}${status.last_export_day ? `；最近导出 ${status.last_export_day}` : ""}`;
   } catch { /* 断连不影响正在编辑的草稿。 */ }
   finally { setTimeout(refreshMaintenanceStatus, 30000); }
 }
@@ -1742,15 +1780,31 @@ $("#retry-all").addEventListener("click", async () => {
   $("#retry-list").querySelectorAll("button").forEach(button => { button.disabled = true; });
   try {
     const result = await api("/api/registrations/retry-all", { method: "POST", body: JSON.stringify({ failure_ids: failureIds }) });
-    rowStates = result.row_states; render();
+    if (result.row_states) { rowStates = result.row_states; render(); }
     const accepted = result.results.filter(item => item.accepted), blocked = result.results.filter(item => !item.accepted);
     const label = $("#retry-batch-result"); label.hidden = false;
     label.textContent = `本次已接收 ${accepted.length} 条（含复用 ${accepted.filter(item => item.reused).length} 条），拦截 ${blocked.length} 条。` +
       [...new Set(blocked.map(item => item.reason))].join("；") + " 每单独立核查，新的失败不会自动重登。";
     toast(`批量核查已接收 ${accepted.length} 条，拦截 ${blocked.length} 条`);
+    if (result.batch_id) {
+      try { localStorage.setItem('gift-retry-batch', result.batch_id); } catch { /* Current page still polls. */ }
+      pollRetryBatch(result.batch_id);
+    }
   } catch (error) { toast(error.message, true); }
   finally { retryLoading = false; refreshRetryList(); }
 });
+
+async function pollRetryBatch(id) {
+  try {
+    const batch = await api(`/api/registrations/batches/${id}`);
+    const label = $('#retry-batch-result'); label.hidden = false;
+    const rejected = batch.results.filter(item => item.state === 'rejected');
+    const completed = batch.results.filter(item => ['success','failed','cancelled','skipped'].includes(item.execution_state)).length;
+    label.textContent = `批次受理 ${batch.accepted_count} 条，拒绝 ${rejected.length} 条，执行终态 ${completed} 条。受理不代表平台成功，请查看逐单状态。`;
+    if (batch.status !== 'needs_attention' && completed + rejected.length < batch.results.length)
+      setTimeout(() => pollRetryBatch(id), 2000);
+  } catch (error) { toast(`批次进度暂不可读取：${error.message}。请勿据此判断未受理。`, true); }
+}
 
 let hostManaging = false, statusSelectedIds = [];
 let cancellationTargets = [];
@@ -1895,6 +1949,9 @@ $("#network-ack").addEventListener("click", async () => {
     $("#edit-status").hidden = !hostActionsAvailable;
     $("#cancel-queued").hidden = !hostActionsAvailable;
     if (hostActionsAvailable && config.frontend_version >= 6) refreshMaintenanceStatus();
+    if (hostActionsAvailable) {
+      try { const batchId = localStorage.getItem('gift-retry-batch'); if (batchId) pollRetryBatch(batchId); } catch { /* Storage is optional. */ }
+    }
     if (config.network_settings_available) refreshNetworkNotice();
     buttons.forEach(button => { button.disabled = false; });
     if (config.platform_login_available === false) {

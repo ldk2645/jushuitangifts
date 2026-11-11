@@ -1,6 +1,8 @@
 import json
+import hashlib
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import nullcontext
 from datetime import datetime, timedelta
@@ -21,6 +23,21 @@ def row(i=0):
 
 
 class CoreSafetyTests(unittest.TestCase):
+    def test_explicit_cursor_repair_backs_up_and_checks_expected_bytes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            service = MaintenanceService(Mock(), Mock(), Path(folder))
+            raw = b'\0' * 191; service.path.write_bytes(raw)
+            digest = hashlib.sha256(raw).hexdigest()
+            with self.assertRaises(ValueError):
+                service.repair_cursor(expected_sha256='wrong', next_day='2026-11-12')
+            self.assertEqual(service.path.read_bytes(), raw)
+            service.repair_cursor(expected_sha256=digest, next_day='2026-11-12')
+            self.assertEqual((Path(folder)/'maintenance_backups'/(digest+'.json')).read_bytes(), raw)
+            self.assertEqual(service.status()['next_run'], '2026-11-12T01:00:00+08:00')
+            # Synthetic rollback restores the exact damaged original for investigation.
+            atomic_write(service.path, (Path(folder)/'maintenance_backups'/(digest+'.json')).read_bytes())
+            self.assertEqual(service.path.read_bytes(), raw)
+
     def test_bad_cursor_does_not_block_review_or_change_bytes(self):
         for payload in (b'\0'*191, b'{"version":1,', b'[]', b'{"version":1}'):
             with self.subTest(payload=payload), tempfile.TemporaryDirectory() as folder:
@@ -70,6 +87,7 @@ class CoreSafetyTests(unittest.TestCase):
             while any(t.is_alive() for t in threads):
                 try: json.loads(path.read_bytes())
                 except PermissionError: pass  # Windows sharing violation is an explicit read failure, never partial JSON.
+                time.sleep(.001)
             for t in threads: t.join()
             self.assertEqual(errors, [])
             original = path.read_bytes()

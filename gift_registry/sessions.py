@@ -5,10 +5,12 @@ import json
 import os
 import time
 import tempfile
+import threading
 from ctypes import wintypes
 from pathlib import Path
 
 MAGIC = b"GIFT-SESSION-DPAPI-1\n"
+_write_locks = [threading.RLock() for _ in range(64)]
 
 
 class _Blob(ctypes.Structure):
@@ -40,6 +42,12 @@ def _crypt(payload: bytes, decrypt: bool = False) -> bytes:
 
 def atomic_write(path: Path, content: bytes):
     path = Path(path)
+    # Bounded lock stripes avoid unbounded per-file lock retention.
+    with _write_locks[hash(str(path.absolute()).casefold()) % len(_write_locks)]:
+        _atomic_write_locked(path, content)
+
+
+def _atomic_write_locked(path, content):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
@@ -58,7 +66,7 @@ def atomic_write(path: Path, content: bytes):
             except PermissionError as exc:
                 if getattr(exc, 'winerror', None) not in {5, 32, 33} or attempt == 9:
                     raise
-                time.sleep(.005)
+                time.sleep(.005 * (attempt + 1))
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)

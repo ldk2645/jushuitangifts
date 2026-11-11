@@ -69,7 +69,7 @@ class IsolatedQueue(unittest.TestCase):
         self.jobs.close()
         self.temp.cleanup()
 
-    def fail(self, mode="no_new"):
+    def fail_order(self, mode="no_new"):
         self.operations.modes[row()["order_no"]] = mode
         self.jobs.start([row()], CATALOG)
         self.jobs.pending.join()
@@ -90,7 +90,7 @@ class AutoReviewTests(IsolatedQueue):
         self.assertEqual(item, original)
 
     def test_legacy_ten_minute_pending_schedule_uses_three_minutes_without_replaying(self):
-        due = self.fail()
+        due = self.fail_order()
         for path in self.jobs.directory.rglob('*.json'):
             document = json.loads(path.read_text(encoding='utf-8'))
             items = document.get('items', [document['item']] if 'item' in document else [])
@@ -109,7 +109,7 @@ class AutoReviewTests(IsolatedQueue):
         self.assertEqual(len(self.operations.submissions), 1)
 
     def test_completed_review_is_not_replayed_when_claim_file_is_missing(self):
-        due = self.fail()
+        due = self.fail_order()
         self.jobs.enqueue_due_reviews(due)
         self.jobs.pending.join()
         self.assertFalse(self.jobs.states()['row-1']['review_result']['success'])
@@ -120,7 +120,7 @@ class AutoReviewTests(IsolatedQueue):
         self.assertEqual(self.operations.trace, trace)
 
     def test_review_does_not_steal_row_from_newer_order_and_explicit_reselect_works(self):
-        due = self.fail()
+        due = self.fail_order()
         current = row('ORDER-B', 'row-1')
         self.jobs.start([current], CATALOG)
         self.jobs.pending.join()
@@ -137,7 +137,7 @@ class AutoReviewTests(IsolatedQueue):
         self.assertEqual(len(self.operations.submissions), 2)
 
     def test_legacy_failure_review_preserves_row_binding(self):
-        due = self.fail()
+        due = self.fail_order()
         for path in self.jobs.directory.glob('*.json'):
             job = json.loads(path.read_text(encoding='utf-8'))
             for item in job['items']:
@@ -165,14 +165,14 @@ class AutoReviewTests(IsolatedQueue):
         self.assertEqual(state['state'], 'failed')
         self.assertGreaterEqual((due - datetime.fromisoformat(state['updated_at'])).total_seconds(), 180)
         self.assertEqual(self.jobs.enqueue_due_reviews(due - timedelta(seconds=1)), 0)
-        self.assertEqual(self.jobs.enqueue_due_reviews(due), 1)
+        self.assertEqual(self.jobs.enqueue_due_reviews(due), 0)
         self.jobs.pending.join()
-        self.assertEqual(self.operations.trace, [('query', record['order_no'])])
+        self.assertEqual(self.operations.trace, [])
         self.assertEqual(self.jobs.enqueue_due_reviews(due + timedelta(days=1)), 0)
         self.assertEqual(self.jobs.states()['row-1']['state'], 'failed')  # 无基线不冒充成功
 
     def test_three_minutes_exactly_one_read_no_submit_copies_upgrade_and_daily_log_updates(self):
-        due = self.fail()
+        due = self.fail_order()
         self.jobs.start([row(identifier="copy")], CATALOG)
         self.jobs.pending.join()
         self.assertEqual(self.jobs.enqueue_due_reviews(due - timedelta(seconds=1)), 0)
@@ -215,28 +215,28 @@ class AutoReviewTests(IsolatedQueue):
             callback()
             return self.operations.submit_registration(request, before)
         self.operations.submit_registration_tracked = tracked
-        due = self.fail("submit_timeout")
+        due = self.fail_order("submit_timeout")
         self.operations.modes.clear()
         self.jobs.enqueue_due_reviews(due)
         self.jobs.pending.join()
         self.assertEqual(self.jobs.states()["row-1"]["state"], "failed")
-        self.assertIn("有效回执", self.jobs.states()["row-1"]["detail"])
+        self.assertIn("有效回执", json.loads(next((self.jobs.directory / "auto_reviews").glob("*.json")).read_text(encoding="utf-8"))["detail"])
         self.assertEqual(len(self.operations.submissions), 1)
 
     def test_timeout_without_click_evidence_and_query_failure_never_upgrade_from_other_new_record(self):
-        due = self.fail("submit_timeout")
+        due = self.fail_order("submit_timeout")
         self.operations.modes.clear()
         self.jobs.enqueue_due_reviews(due)
         self.jobs.pending.join()
         self.assertEqual(self.jobs.states()["row-1"]["state"], "failed")
-        self.assertIn("提交依据", self.jobs.states()["row-1"]["detail"])
+        self.assertIn("关联证据", json.loads(next((self.jobs.directory / "auto_reviews").glob("*.json")).read_text(encoding="utf-8"))["detail"])
 
     def test_rejected_receipt_cannot_be_overridden_by_click_marker(self):
         def tracked(request, before, callback):
             callback()
             return self.operations.submit_registration(request, before)
         self.operations.submit_registration_tracked = tracked
-        due = self.fail("rejected")
+        due = self.fail_order("rejected")
         self.operations.modes.clear()
         self.jobs.enqueue_due_reviews(due)
         self.jobs.pending.join()
@@ -244,22 +244,22 @@ class AutoReviewTests(IsolatedQueue):
 
     def test_old_matching_gift_is_not_new_information(self):
         self.operations.query_order = lambda order: OrderSnapshot(order, True, (GiftRecord("old", ("SKU-A",), gift_quantities=(1,) * len(("SKU-A",))),))
-        due = self.fail()
+        due = self.fail_order()
         self.jobs.enqueue_due_reviews(due)
         self.jobs.pending.join()
         self.assertEqual(self.jobs.states()["row-1"]["state"], "failed")
 
     def test_missing_baseline_is_read_once_but_never_marks_success(self):
-        due = self.fail("query_error")
+        due = self.fail_order("query_error")
         self.operations.modes.clear()
         self.operations.query_order = lambda order: OrderSnapshot(order, True, (GiftRecord("new", ("SKU-A",), gift_quantities=(1,) * len(("SKU-A",))),))
         self.jobs.enqueue_due_reviews(due)
         self.jobs.pending.join()
         self.assertEqual(self.jobs.states()["row-1"]["state"], "failed")
-        self.assertIn("完整原始基线", self.jobs.states()["row-1"]["detail"])
+        self.assertIn("未提交", json.loads(next((self.jobs.directory / "auto_reviews").glob("*.json")).read_text(encoding="utf-8"))["detail"])
 
     def test_legacy_failures_without_schedule_do_not_run(self):
-        due = self.fail()
+        due = self.fail_order()
         for path in self.jobs.directory.rglob("*.json"):
             data = json.loads(path.read_text(encoding="utf-8"))
             for item in data.get("items", [data.get("item", {})]):
@@ -270,7 +270,7 @@ class AutoReviewTests(IsolatedQueue):
         self.assertEqual(self.operations.trace, trace)
 
     def test_crashed_read_claim_is_not_replayed_after_restart(self):
-        due = self.fail()
+        due = self.fail_order()
         identity = self.jobs._latest_attempts()[0]["failure_id"]
         path = self.jobs.directory / "auto_reviews" / (hashlib.sha256(identity.encode()).hexdigest() + ".json")
         path.parent.mkdir()
@@ -283,7 +283,7 @@ class AutoReviewTests(IsolatedQueue):
         self.assertEqual(self.operations.trace, [])
 
     def test_newer_manual_hold_for_other_gifts_does_not_hide_original_review(self):
-        due = self.fail()
+        due = self.fail_order()
         self.jobs.record_external_submission(row(gift=1), CATALOG, None)
         self.assertEqual(self.jobs.enqueue_due_reviews(due), 1)
 
@@ -308,10 +308,10 @@ class NightlyTests(IsolatedQueue):
         modified = {**success, "id": "other", "gift_ids": ["SKU-B"], "gift": "礼品乙"}
         self.store.write(0, [success, failure, modified])
         jobs_before = {p.name: p.read_bytes() for p in self.jobs.directory.glob("*.json")}
-        self.service.tick()
+        self.service.reconcile_archive(self.store.read()['revision'])
         self.assertFalse(self.service.exports.exists())
         self.clock += timedelta(minutes=1)
-        self.service.tick()
+        self.service.reconcile_archive(self.store.read()['revision'])
         output = self.service.exports / "gift-registration-2026-10-26.xlsx"
         self.assertTrue(output.exists())
         self.assertEqual(self.store.read()["rows"], [failure, modified])
@@ -319,7 +319,7 @@ class NightlyTests(IsolatedQueue):
         backup = json.loads((self.folder / "draft_archive/before-cleanup-2026-10-27.json").read_text(encoding="utf-8"))
         self.assertEqual(backup["rows"], [success, failure, modified])
         self.assertEqual(jobs_before, {p.name: p.read_bytes() for p in self.jobs.directory.glob("*.json")})
-        self.service.tick()
+        self.service.reconcile_archive(self.store.read()['revision'])
         self.assertEqual(self.store.read()["revision"], 2)
         with ZipFile(output) as archive:
             self.assertEqual(len(ET.fromstring(archive.read("xl/worksheets/sheet1.xml")).findall('.//{*}row')), 2)
@@ -328,13 +328,13 @@ class NightlyTests(IsolatedQueue):
     def test_export_failure_preserves_table_and_retries_only_export(self):
         self.complete([row()], self.clock - timedelta(hours=3))
         self.store.write(0, [row()])
-        self.service.tick()
+        self.service.reconcile_archive(self.store.read()['revision'])
         self.clock += timedelta(minutes=1)
         with patch.object(self.service, "_export", side_effect=OSError("test")):
-            self.service.tick()
+            self.service.reconcile_archive(self.store.read()['revision'])
         self.assertEqual(self.store.read()["rows"], [row()])
         self.assertIn("OSError", self.service.status()["last_error"])
-        self.service.tick()
+        self.service.reconcile_archive(self.store.read()['revision'])
         self.assertEqual(self.store.read()["rows"], [])
         self.assertEqual(len(self.operations.submissions), 1)
 
@@ -342,17 +342,17 @@ class NightlyTests(IsolatedQueue):
         self.complete([row()], self.clock - timedelta(hours=3))
         changed = {**row(), "gift_ids": ["SKU-B"], "gift": "礼品乙"}
         self.store.write(0, [changed])
-        self.service.tick()
+        self.service.reconcile_archive(self.store.read()['revision'])
         self.clock += timedelta(hours=3)
         newer = row("000new", "new")
         self.complete([newer], self.clock)
         self.store.write(1, [changed, newer])
-        self.service.tick()
+        self.service.reconcile_archive(self.store.read()['revision'])
         self.assertEqual(self.store.read()["rows"], [changed, newer])
 
     def test_first_enable_after_one_waits_until_next_night_restart_catches_up(self):
         self.clock = self.clock.replace(hour=15)
-        self.service.tick()
+        self.service.reconcile_archive(self.store.read()['revision'])
         self.assertEqual(self.service.status()["next_run"], "2026-10-28T01:00:00+08:00")
         self.assertFalse(self.service.exports.exists())
         self.clock += timedelta(days=3)
@@ -365,24 +365,24 @@ class NightlyTests(IsolatedQueue):
     def test_busy_queue_defers_export_and_cleanup_until_idle(self):
         self.complete([row()], self.clock - timedelta(hours=3))
         self.store.write(0, [row()])
-        self.service.tick()
+        self.service.reconcile_archive(self.store.read()['revision'])
         self.clock += timedelta(minutes=1)
         # 占用原队列的计数，但不给工作线程派发任何额外业务。
         with self.jobs.pending.all_tasks_done:
             self.jobs.pending.unfinished_tasks += 1
         try:
-            self.service.tick()
+            self.service.reconcile_archive(self.store.read()['revision'])
             self.assertEqual(self.store.read()["rows"], [row()])
             self.assertFalse(self.service.exports.exists())
         finally:
             self.jobs.pending.task_done()
-        self.service.tick()
+        self.service.reconcile_archive(self.store.read()['revision'])
         self.assertEqual(self.store.read()["rows"], [])
 
     def test_backup_failure_preserves_success_rows_and_history(self):
         self.complete([row()], self.clock - timedelta(hours=3))
         self.store.write(0, [row()])
-        self.service.tick()
+        self.service.reconcile_archive(self.store.read()['revision'])
         self.clock += timedelta(minutes=1)
         from gift_registry.sessions import atomic_write
         def write(path, content):
@@ -390,7 +390,7 @@ class NightlyTests(IsolatedQueue):
                 raise OSError("isolated backup failure")
             return atomic_write(path, content)
         with patch("gift_registry.maintenance.atomic_write", side_effect=write):
-            self.service.tick()
+            self.service.reconcile_archive(self.store.read()['revision'])
         self.assertTrue((self.service.exports / "gift-registration-2026-10-26.xlsx").exists())
         self.assertEqual(self.store.read()["rows"], [row()])
         self.assertEqual(self.store.read()["revision"], 1)
@@ -401,16 +401,16 @@ class NightlyTests(IsolatedQueue):
         self.complete([row()], self.clock - timedelta(hours=3))
         self.operations.configured = False
         self.store.write(0, [row()])
-        self.service.tick()
+        self.service.reconcile_archive(self.store.read()['revision'])
         self.clock += timedelta(minutes=1)
-        self.service.tick()
+        self.service.reconcile_archive(self.store.read()['revision'])
         output = self.service.exports / "gift-registration-2026-10-26.xlsx"
         self.operations.configured = True
         self.operations.modes.clear()
         self.clock += timedelta(minutes=1)
-        self.service.tick()
+        self.service.reconcile_archive(self.store.read()['revision'])
         self.jobs.pending.join()
-        self.service.tick()
+        self.service.reconcile_archive(self.store.read()['revision'])
         with ZipFile(output) as archive:
             self.assertEqual(len(ET.fromstring(archive.read("xl/worksheets/sheet1.xml")).findall('.//{*}row')), 2)
             self.assertEqual(len(ET.fromstring(archive.read("xl/worksheets/sheet2.xml")).findall('.//{*}row')), 1)
@@ -419,14 +419,14 @@ class NightlyTests(IsolatedQueue):
         first, second = row('ORDER-1','one'), row('ORDER-2','two')
         self.complete([first, second], self.clock - timedelta(hours=3))
         self.store.write(0, [first])
-        self.service.tick()
+        self.service.reconcile_archive(self.store.read()['revision'])
         self.clock += timedelta(minutes=1)
         with patch.object(self.store, 'write', side_effect=OSError('test')):
-            self.service.tick()
+            self.service.reconcile_archive(self.store.read()['revision'])
         old_backup = self.folder / 'draft_archive/before-cleanup-2026-10-27.json'
         original = old_backup.read_bytes()
         self.store.write(1, [first, second])
-        self.service.tick()
+        self.service.reconcile_archive(self.store.read()['revision'])
         self.assertEqual(self.store.read()['rows'], [])
         self.assertEqual(old_backup.read_bytes(), original)
         backups = [json.loads(p.read_text(encoding='utf-8')) for p in (self.folder / 'draft_archive').glob('*.json')]

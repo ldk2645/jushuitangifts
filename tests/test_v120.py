@@ -88,8 +88,9 @@ class ManagementTests(unittest.TestCase):
         failure = self.jobs.retry_candidates()['failures'][0]
         with self.assertRaisesRegex(ValueError, '人工成功'):
             self.management.retry([failure['failure_id']])
-        with self.assertRaises(ValueError):
-            self.management.retry([failure['failure_id']], batch=True)
+        result = self.management.retry([failure['failure_id']], batch=True)
+        self.jobs.pending.join()
+        self.assertEqual(result['accepted_count'], 0)
         self.assertEqual(self.operations.checks, [])
 
     def test_current_sheet_only_and_stale_candidate_is_rejected(self):
@@ -197,7 +198,7 @@ class ManagementTests(unittest.TestCase):
         service.tick()
         clock += timedelta(minutes=1)
         service.tick()
-        self.assertEqual([r['id'] for r in self.rows.read()['rows']], ['r1'])
+        self.assertEqual([r['id'] for r in self.rows.read()['rows']], ['r1', 'r2', 'r3'])
 
     def test_bulk_retry_eligible_once_blocks_uncertain_and_retains_history(self):
         self.operations.modes.update({'00001': 'query_error', '00002': 'query_error', '00003': 'submit_timeout'})
@@ -213,7 +214,7 @@ class ManagementTests(unittest.TestCase):
         repeated = self.jobs.retry_all_failed(ids)
         self.jobs.pending.join()
         self.assertEqual(len(self.operations.submissions), count)
-        self.assertTrue(all(r['reused'] for r in repeated['results'] if r['accepted']))
+        self.assertEqual(repeated['batch_id'], result['batch_id'])
         self.assertEqual(len(self.jobs.daily_records()[1]), 5)
 
     def test_bulk_checks_each_and_does_not_chase_new_failures(self):

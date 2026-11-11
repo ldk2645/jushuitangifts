@@ -58,7 +58,7 @@ def main():
             assert js("return matchGifts('003+C').ids") == ['003+C']
             assert js("return matchGifts('001-Ab/7 002-Bb/8').ids") == ['001-Ab/7', '002-Bb/8']
             assert js("return matchGifts('合成蓝包').ids") == ['001-Ab/7']
-            assert js("return matchGifts('合成蓝色背').ids") == ['001-Ab/7']
+            assert js("return matchGifts('合成蓝色背').ids") == []  # Incomplete names require explicit selection.
             print('PASS: full SKU strings only; case, leading zeros, punctuation and typos never fuzzy-match; names/aliases still work.', flush=True)
             reset()
             original_ids = js('return rows.map(r=>r.id)')

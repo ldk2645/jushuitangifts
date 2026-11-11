@@ -14,6 +14,9 @@ from .config import ROOT
 from .platform_operations import SeleniumOperations
 from .sessions import atomic_write
 from .diagnostics import diagnose
+from .retry_batches import RetryBatches
+from .job_storage import JobStorage
+from .queue_metrics import MeasuredQueue, MeasuredRLock
 from .workflow import (PlatformOperationError, Workflow, GiftRecord, OrderSnapshot, SubmissionReceipt,
                        request_from_row, validate_snapshot, validate_receipt, verify_new_records, verify_added_records)
 
@@ -147,14 +150,18 @@ def registration_rows(rows, gifts):
     return records
 
 
-class RegistrationQueue:
+class RegistrationQueue(RetryBatches, JobStorage):
     def __init__(self, directory, operations=None):
         self.directory = Path(directory)
-        self.lock = threading.RLock()
-        self.pending = queue.Queue()
+        self.lock = MeasuredRLock()
+        self.pending = MeasuredQueue()
         self.worker = None
         self.scheduled = set()
         self._claimed = None
+        self._snapshot_cache = {}
+        self._storage_epochs = {}
+        self._states_fingerprint, self._states_json = None, None
+        self._result_index, self._unknown_index, self._index_ready = {}, {}, False
         self._closed = False
         self._stopping = False
         self._directory_lock = _QueueDirectoryLock(self.directory)
@@ -174,6 +181,7 @@ class RegistrationQueue:
                     else:
                         record.update(status="interrupted", detail="自动复核中断，未重复查询或提交")
                     atomic_write(path, json.dumps(record, ensure_ascii=False).encode("utf-8"))
+            self._restore_retry_batches()
         except BaseException:
             self._directory_lock.close()
             raise
@@ -208,14 +216,31 @@ class RegistrationQueue:
     def _paths(self):
         return sorted(self.directory.glob("*.json"))
 
+    def health(self):
+        with self.lock:
+            reviews = {}
+            for path in (self.directory / 'auto_reviews').glob('*.json'):
+                try:
+                    status = json.loads(path.read_text(encoding='utf-8')).get('status', 'unknown')
+                except (OSError, ValueError):
+                    status = 'corrupt'
+                reviews[status] = reviews.get(status, 0) + 1
+            return {'review_claims': reviews, 'pending_tasks': self.pending.unfinished_tasks,
+                    'lock_max_wait_seconds': self.lock.max_wait_seconds,
+                    'lock_max_hold_seconds': self.lock.max_hold_seconds,
+                    'queue_max_wait_seconds': self.pending.max_wait_seconds}
+
     def _load(self, path):
-        job = json.loads(path.read_text(encoding="utf-8"))
+        job = self._read_snapshot(path)
         if (not isinstance(job, dict) or not isinstance(job.get('rows'), list)
+                or any(not isinstance(row, dict) or not isinstance(row.get('id'), str)
+                       or not isinstance(row.get('order_no'), str) for row in job.get('rows', []))
                 or ('items' in job and (not isinstance(job['items'], list) or len(job['items']) != len(job['rows'])))):
             raise ValueError('任务文件结构不一致；保留原记录，禁止执行')
         if 'items' in job and any(not isinstance(item, dict) or item.get('row_id') != row.get('id')
                                   for row, item in zip(job['rows'], job['items'])):
             raise ValueError('任务行身份不一致；保留原记录，禁止执行')
+        job = self._read_overlays(path, job)
         if "items" not in job:
             job["items"] = [self._item(row) for row in job["rows"]]
             legacy_version = ("version" not in job
@@ -232,6 +257,10 @@ class RegistrationQueue:
                 # 只在内存中形成保守结果；不删除、改写原文件或猜测提交成功证据。
                 job["state"] = "failed"
         for item in job["items"]:
+            if (item.get('state') not in TERMINAL | ACTIVE | {'waiting_for_workflow'}
+                    or type(item.get('submit_attempted')) is not bool or type(item.get('attempts')) is not int
+                    or item['attempts'] < 0):
+                raise ValueError('任务执行字段不一致；保留原记录，禁止执行')
             if item.get("state") == "cancelled" and not (
                     item.get("submit_attempted") is False and item.get("attempts") == 0
                     and item.get("submission_status") == "not_submitted" and item.get("cancelled_by") == "host"
@@ -264,6 +293,29 @@ class RegistrationQueue:
                 destination = self.directory / "execution_history" / (hashlib.sha256(record["failure_id"].encode()).hexdigest() + ".json")
                 if not destination.exists():
                     atomic_write(destination, json.dumps(record, ensure_ascii=False, indent=2).encode("utf-8"))
+        self._summarize_job(job)
+        job["updated_at"] = now()
+        job['storage_version'] = 1
+        for item in job['items']:
+            if (item['state'] == 'queued' and item.get('submit_attempted') is False
+                    and item.get('attempts') == 0 and item.get('submission_status') in {None, 'not_submitted'}):
+                item['submission_status'] = 'snapshot_guard'
+        overlays = list(self._overlay_dir(path).glob('*.json'))
+        if overlays:
+            job['retired_generations'] = list(dict.fromkeys([*job.get('retired_generations', []),
+                                                           job.get('storage_generation', 'legacy')]))
+            job['storage_generation'] = uuid.uuid4().hex
+        payload = json.dumps(job, ensure_ascii=False, indent=2)
+        atomic_write(path, payload.encode("utf-8"))
+        self._snapshot_cache[path.name] = ((path.stat().st_mtime_ns, path.stat().st_size), json.loads(payload), payload)
+        self._storage_epochs[path.name] = self._storage_epochs.get(path.name, 0) + 1
+        for overlay in overlays:
+            overlay.unlink(missing_ok=True)
+        for index in range(len(job['items'])):
+            self._index_item(path, job, index)
+
+    @staticmethod
+    def _summarize_job(job):
         states = {item["state"] for item in job["items"]}
         if states <= TERMINAL:
             completed = states - {"cancelled"}
@@ -276,8 +328,6 @@ class RegistrationQueue:
             job["state"] = "queued"
         else:
             job["state"] = "waiting_for_workflow"
-        job["updated_at"] = now()
-        atomic_write(path, json.dumps(job, ensure_ascii=False, indent=2).encode("utf-8"))
 
     def _release_unused_start(self):
         release = getattr(self.operations, "release_unused_start", None)
@@ -297,7 +347,11 @@ class RegistrationQueue:
                     item.setdefault("display_updated_at", item.get("updated_at", job["created_at"]))
                     safe = (item.get('submit_attempted') is False and item.get('attempts') == 0
                             and not item.get('evidence', {}).get('submit_clicked')
-                            and item.get('submission_status') in {None, 'not_submitted'})
+                            and not item.get('evidence', {}).get('receipt')
+                            and not item.get('evidence', {}).get('native_click_started')
+                            and not any(e.get('state') in {'submitting','verifying'} for e in item.get('events', []))
+                            and (item.get('submission_status') in {None, 'not_submitted'}
+                                 or job.get('storage_version') == 1 and item.get('submission_status') == 'snapshot_guard'))
                     if item['state'] == 'queued' and safe and not item.get('claimed_at'):
                         item.update(state='waiting_for_workflow', submission_status='not_submitted',
                                     detail='上次任务未领取；等待主机明确开始，未自动执行', updated_at=now())
@@ -328,7 +382,12 @@ class RegistrationQueue:
     def states(self):
         result, latest = {}, {}
         with self.lock:
-            for path in self._paths():
+            paths = self._paths()
+            fingerprint = tuple((p.name, p.stat().st_mtime_ns, p.stat().st_size,
+                                 self._storage_epochs.get(p.name, 0)) for p in paths)
+            if fingerprint == self._states_fingerprint and not any(self._overlay_dir(p).exists() for p in paths):
+                return json.loads(self._states_json)
+            for path in paths:
                 job = self._load(path)
                 for row, item in zip(job["rows"], job["items"]):
                     # 行归属只由明确创建／选回任务更新；后台复核不能抢占后来使用此行的订单。
@@ -342,23 +401,27 @@ class RegistrationQueue:
                                          "detail": item["detail"], "attempts": item["attempts"], "updated_at": item["updated_at"],
                                          "review_due_at": self._review_due_at(item), "review_result": item.get("review_result"),
                                          "retry_cancelled": item["state"] == "cancelled" and bool(item.get("retry_of"))}
+            self._states_fingerprint = fingerprint
+            self._states_json = json.dumps(result, ensure_ascii=False)
         return result
 
     def _existing_result(self, key, exclude=None, order_no=None):
         candidates = []
-        for path in self._paths():
-            job = self._load(path)
-            for row, item in zip(job["rows"], job["items"]):
-                ids = row.get("gift_ids")
-                unknown_gifts = not isinstance(ids, list) or not ids or any(not isinstance(value, str) or not value for value in ids)
-                matches = task_key(row) == key or (unknown_gifts and row["order_no"].strip() == order_no)
-                if matches and item["state"] not in {"skipped", "cancelled"} and (item["state"] in TERMINAL or item["submit_attempted"]):
-                    if exclude != (path.name, item["row_id"]):
-                        result = deepcopy(item)
-                        if result["state"] not in TERMINAL:
-                            result.update(state="failed", detail="已有提交尝试但结果未确认，请人工核查；禁止自动重复登记")
-                        # 已核对过新增记录的成功不会被较晚的中断恢复失败覆盖。
-                        candidates.append((_verified_success(result), _item_updated_time(item, job), path.name, result))
+        if not self._index_ready:
+            self._refresh_result_index()
+        entries = {**self._result_index.get(key, {}), **self._unknown_index.get(order_no, {})}
+        for path_name, row, item, created_at in entries.values():
+            job = {'created_at': created_at}
+            ids = row.get("gift_ids")
+            unknown_gifts = not isinstance(ids, list) or not ids or any(not isinstance(value, str) or not value for value in ids)
+            matches = task_key(row) == key or (unknown_gifts and row["order_no"].strip() == order_no)
+            if matches and item["state"] not in {"skipped", "cancelled"} and (item["state"] in TERMINAL or item["submit_attempted"]):
+                if exclude != (path_name, item["row_id"]):
+                    result = deepcopy(item)
+                    if result["state"] not in TERMINAL:
+                        result.update(state="failed", detail="已有提交尝试但结果未确认，请人工核查；禁止自动重复登记")
+                    # 已核对过新增记录的成功不会被较晚的中断恢复失败覆盖。
+                    candidates.append((_verified_success(result), _item_updated_time(item, job), path_name, result))
         return max(candidates, key=lambda candidate: candidate[:3])[3] if candidates else None
 
     @staticmethod
@@ -408,6 +471,9 @@ class RegistrationQueue:
     def _retry_reason(item):
         if item["state"] != "failed" or item.get("source") == "manual":
             return "该记录不属于可重登的自动登记失败任务"
+        evidence = item.get('evidence', {})
+        if evidence.get('submit_clicked') or evidence.get('native_click_started') or evidence.get('receipt'):
+            return '已有提交尝试、点击或回执依据，禁止重新提交，请人工核查'
         if item.get("submission_status") == "not_submitted":
             return ""
         if item.get("submission_status") is not None:
@@ -463,7 +529,7 @@ class RegistrationQueue:
                     key = task_key(row)
                     if (key not in keys or item["state"] != "queued" or item.get("submit_attempted") is not False
                             or item.get("attempts") != 0 or item.get("evidence", {}).get("submit_clicked")
-                            or item.get("submission_status") not in {None, "not_submitted"}):
+                            or item.get("submission_status") not in {None, "not_submitted", "snapshot_guard"}):
                         continue
                     stamp = now()
                     item.update(state="cancelled", detail="主机取消排队，尚未开始平台处理；未提交",
@@ -484,42 +550,36 @@ class RegistrationQueue:
         return max(paths, key=lambda path: (self._load(path)["created_at"], path.name)) if paths else base
 
     def retry_all_failed(self, failure_ids):
-        """一次明确请求的固定失败集合；重复请求复用任务，不追逐本批次新失败。"""
-        if (not isinstance(failure_ids, list) or not failure_ids or len(failure_ids) > 10000
-                or any(not isinstance(value, str) or not value or len(value) > 128 for value in failure_ids)
-                or len(set(failure_ids)) != len(failure_ids)):
-            raise ValueError("请选择有效且不重复的失败记录")
-        with self.lock:
-            def existing(value):
-                path = self._request_path(self.directory / f"retry-{hashlib.sha256(value.encode()).hexdigest()}.json")
-                return path.exists() and all(item["state"] != "cancelled" for item in self._load(path)["items"])
-            if self.pending.unfinished_tasks and not all(existing(value) for value in failure_ids):
-                raise ValueError("请等待当前登记任务结束，再操作批量重登")
-            results = []
-            for failure_id in failure_ids:
-                try:
-                    result = self.retry_failed(failure_id, _batch=True)
-                    results.append({"failure_id": failure_id, "accepted": True, "reused": result["reused"]})
-                except ValueError as exc:
-                    results.append({"failure_id": failure_id, "accepted": False, "reason": str(exc)})
-            return {"results": results, "row_states": self.states()}
+        """Persist one idempotent request; dispatch never runs on the HTTP thread."""
+        existing = self.existing_retry_batch(failure_ids)
+        if existing is not None:
+            return existing
+        allowed = {r['failure_id'] for r in self.retry_candidates()['failures'] if r['eligible']}
+        return self.accept_retry_batch(failure_ids, allowed)
 
-    def retry_failed(self, failure_id, *, _batch=False):
+    def retry_failed(self, failure_id, *, _batch=False, _records=None):
         if not isinstance(failure_id, str) or not failure_id or len(failure_id) > 128:
             raise ValueError("请选择有效的失败记录")
         fingerprint = hashlib.sha256(failure_id.encode()).hexdigest()
         path = self.directory / f"retry-{fingerprint}.json"
         with self.lock:
-            if self._closed or self._stopping:
+            if self._closed or (self._stopping and not _batch):
                 raise ValueError("工作台正在关闭，不能重新登记")
             path = self._request_path(path)
             if path.exists():
                 job = self._load(path)
                 if all(item["state"] != "cancelled" for item in job["items"]):
-                    return {"task_id": job["id"], "reused": True, "row_states": self.states()}
+                    if _batch and all(i['state'] == 'waiting_for_workflow' and not i.get('claimed_at')
+                                      and i.get('submit_attempted') is False for i in job['items']):
+                        for i in job['items']: i['state'] = 'queued'
+                        self._save(path, job)
+                        if path.name not in self.scheduled:
+                            self.scheduled.add(path.name); self.pending.put(path)
+                    return {"task_id": job["id"], "reused": True, "row_states": {} if _batch else self.states()}
                 path = self.directory / f"retry-{fingerprint}-next-{uuid.uuid4().hex}.json"
             # 独立订单可以继续入同一串行队列；执行时仍逐单核查。
-            record = next((entry for entry in self._latest_attempts() if entry["failure_id"] == failure_id), None)
+            record = (_records.get(failure_id) if _records is not None else
+                      next((entry for entry in self._latest_attempts() if entry["failure_id"] == failure_id), None))
             if record is None:
                 raise ValueError("失败记录已更新或该订单已有成功记录，请刷新失败列表")
             reason = self._retry_reason(record["item"])
@@ -552,7 +612,7 @@ class RegistrationQueue:
             if self.worker is None or not self.worker.is_alive():
                 self.worker = threading.Thread(target=self._work, name="registration-worker", daemon=True)
                 self.worker.start()
-            return {"task_id": job["id"], "reused": False, "row_states": self.states()}
+            return {"task_id": job["id"], "reused": False, "row_states": {} if _batch else self.states()}
 
     def daily_records(self, day=None):
         day = day or datetime.now().astimezone().date()
@@ -780,6 +840,7 @@ class RegistrationQueue:
         fingerprint = hashlib.sha256("\n".join(row_signature(row) for row in records).encode("utf-8")).hexdigest()
         path = self.directory / f"{fingerprint}.json"
         with self.lock:
+            self._refresh_result_index()
             if self._closed:
                 raise RuntimeError("礼赠任务队列已关闭，不能再次开始登记")
             if self._stopping:
@@ -799,6 +860,10 @@ class RegistrationQueue:
             if reused:
                 job = self._load(path)
                 for row, item in zip(job["rows"], job["items"]):
+                    if item['state'] == 'waiting_for_workflow':
+                        prior = self._existing_result(task_key(row), exclude=(path.name, item['row_id']), order_no=row['order_no'].strip())
+                        if prior:
+                            self._reuse(item, prior)
                     if item["state"] in TERMINAL:
                         prior = self._existing_result(task_key(row), exclude=(path.name, item["row_id"]), order_no=row["order_no"].strip())
                         if prior and _verified_success(prior) and not _verified_success(item):
@@ -859,7 +924,10 @@ class RegistrationQueue:
                 return
             try:
                 if isinstance(path, tuple):
-                    self._review_once(path[1])
+                    if path[0].startswith('batch:'):
+                        self._run_retry_batch(path[1])
+                    else:
+                        self._review_once(path[1])
                 else:
                     self._process(path)
             except Exception as exc:
@@ -869,7 +937,8 @@ class RegistrationQueue:
                     with self.lock:
                         if isinstance(path, tuple):
                             review = json.loads(path[1].read_text(encoding="utf-8"))
-                            review.update(status="interrupted", detail="自动复核发生异常，未重复查询或提交")
+                            review.update(status="needs_attention" if path[0].startswith('batch:') else "interrupted",
+                                          detail="后台任务发生异常，保留执行记录，未重复提交")
                             atomic_write(path[1], json.dumps(review, ensure_ascii=False).encode("utf-8"))
                             continue
                         job = self._load(path)
@@ -892,33 +961,33 @@ class RegistrationQueue:
     def _process(self, path):
         with self.lock:
             job = self._load(path)
+            if not self._index_ready:
+                self._refresh_result_index()
         for index, row in enumerate(job["rows"]):
             with self.lock:
-                current = self._load(path)
-                item = current["items"][index]
+                item = self._current_item(path, index)
                 if item["state"] in TERMINAL:
                     continue
                 previous = self._existing_result(task_key(row), exclude=(path.name, item["row_id"]), order_no=row["order_no"].strip())
                 if previous and (not item.get("retry_of") or _verified_success(previous)):
                     self._reuse(item, previous)
-                    self._save(path, current)
+                    self._save_item(path, job, index, item)
                     continue
                 if item["submit_attempted"]:
                     item.update(state="failed", detail="该任务已尝试提交，禁止自动重复登记")
                     self._schedule_review(item, row)
-                    self._save(path, current)
+                    self._save_item(path, job, index, item)
                     continue
                 # 领取与取消使用同一把锁，释放锁前落盘，关闭“仍显示排队但已执行”的竞态窗口。
                 stamp = now()
                 item.update(state="querying", detail="已领取，正在开始订单核查", updated_at=stamp, claimed_at=stamp)
                 item.setdefault("events", []).append({"state": "querying", "at": stamp, "detail": item["detail"]})
-                self._save(path, current)
+                self._save_item(path, job, index, item)
                 self._claimed = (path.name, index)
 
             def report(state, **updates):
                 with self.lock:
-                    document = self._load(path)
-                    target = document["items"][index]
+                    target = self._current_item(path, index)
                     target.setdefault("execution_id", uuid.uuid4().hex)
                     evidence = updates.pop("evidence", None)
                     target.update(state=state, updated_at=now(), **updates)
@@ -927,7 +996,7 @@ class RegistrationQueue:
                     if evidence:
                         target.setdefault("evidence", {}).update(evidence)
                     target["events"].append({"state": state, "at": now(), "detail": target["detail"]})
-                    self._save(path, document)
+                    self._save_item(path, job, index, target)
 
             guard = None
             if item.get("retry_of"):
@@ -940,13 +1009,15 @@ class RegistrationQueue:
             Workflow(self.operations).execute(row, job["gift_catalog"], report, before_submit=guard)
             self._claimed = None
             self._service_review_boundary()
+        self._compact_completed(path)
 
     def _service_review_boundary(self):
         """At most one already claimed review between orders, on the SAME worker."""
         with self.pending.mutex:
-            review = next((entry for entry in self.pending.queue if isinstance(entry, tuple)), None)
+            review = next((entry for entry in self.pending.queue if isinstance(entry, tuple) and entry[0].startswith('review:')), None)
             if review is not None:
                 self.pending.queue.remove(review)
+                self.pending.enqueued.pop(id(review), None)
         if review is None:
             return
         try:

@@ -194,8 +194,15 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
             if challenge:
                 self.send_header('WWW-Authenticate', 'Basic realm="Gift Registry LAN", charset="UTF-8"')
             self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
-            self.end_headers()
-            self.wfile.write(content)
+            try:
+                self.end_headers()
+                self.wfile.write(content)
+            except ConnectionError as exc:
+                # The mutation may already be committed. A lost response is not
+                # a storage failure and must not produce a second 500/retry reply.
+                from .diagnostics import diagnose
+                diagnose(jobs.directory, 'http', 'response_disconnected', exc)
+                self.close_connection = True
 
         def allowed_host(self):
             values = self.headers.get_all('Host', [])
@@ -267,10 +274,15 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
                 if not self.is_local_access():
                     self.send(403, {"error": "后台归档详情仅允许主机查看"})
                     return
-                self.send(200, self.server.maintenance.status())
+                self.send(200, {**self.server.maintenance.status(), 'queue': jobs.health()})
             elif path == "/api/rows":
                 with row_store.lock, jobs.lock:
                     self.send(200, {**row_store.read(), "row_states": management.states()})
+            elif path.startswith('/api/registrations/batches/'):
+                if not self.is_local_access():
+                    self.send(403, {'error': '批次详情仅允许主机查看'})
+                    return
+                self.send(200, jobs.retry_batch_status(path.rsplit('/', 1)[-1]))
             elif path == "/api/registrations/status":
                 self.send(200, {"row_states": management.states(), "workflow_configured": jobs.configured,
                                 "draft_revision": row_store.read()["revision"], "server_stopping": self.server.stopping})
