@@ -2,6 +2,7 @@
 
 import re
 import time
+from dataclasses import asdict
 from datetime import datetime
 
 from selenium.common.exceptions import WebDriverException
@@ -102,6 +103,35 @@ const rows=[...table.querySelectorAll(':scope > .el-table__body-wrapper > table 
      return clone.textContent.trim();
   }));
 return {fields,headers,rows};
+"""
+
+_TASK_DETAIL_CELL = """
+// gift-banniu-task-detail-cell: ordinary cell click opens the task, never a field link.
+const visible=e=>e.getClientRects().length && getComputedStyle(e).visibility!=='hidden';
+const tables=[...document.querySelectorAll('.vxe-table')].filter(visible);
+if(tables.length!==1) return null;
+const table=tables[0];
+const ids=[...new Set([...table.querySelectorAll('.vxe-table--header th[colid]')]
+  .filter(e=>e.textContent.trim()==='创建时间').map(e=>e.getAttribute('colid')))];
+if(ids.length!==1) return null;
+const cells=[...table.querySelectorAll('.vxe-table--body tr[rowid]')]
+  .filter(e=>e.getAttribute('rowid')===arguments[0])
+  .flatMap(e=>[...e.querySelectorAll('td[colid="'+ids[0]+'"] .worksheetColumn')])
+  .filter(e=>visible(e) && !e.closest('.fixed--hidden') &&
+    !e.querySelector('a,button,input,.worksheetColumn-hover,[contenteditable="true"]'));
+if(cells.length!==1) return null;
+const cell=cells[0], r=cell.getBoundingClientRect();
+const box=table.querySelector('.vxe-table--main-wrapper > .vxe-table--body-wrapper');
+if(!box) return null;
+const bounds=box.getBoundingClientRect();
+const fixed=[...table.querySelectorAll('.vxe-table--fixed-left-wrapper')].filter(visible);
+const left=Math.max(bounds.left,...fixed.map(e=>e.getBoundingClientRect().right));
+const center=r.left+r.width/2;
+if(center<left+8 || center>bounds.right-8) {
+  box.scrollLeft+=center-(left+bounds.right)/2;
+  return null; // Horizontal virtualization can replace the row; resolve it again.
+}
+return cell;
 """
 
 
@@ -279,14 +309,43 @@ class BanniuReceiptReader:
     def open_task(self, order_no, task_id):
         if not isinstance(task_id, str) or not task_id.isdecimal():
             raise PlatformOperationError("班牛任务编号无效")
-        selector = f'.vxe-table--body tr[rowid="{task_id}"] .worksheetColumn-hover'
-        locate = lambda: self.page._one(selector, text=order_no)
+        # 订单号可能配置为外链并阻止行点击冒泡；使用同一任务的普通创建时间单元格。
+        # 先避开固定列遮挡，横向滚动后重新按任务 ID 定位，仍只原生点击一次。
+        locate = lambda: self.page._wait(
+            lambda _: self.driver.execute_script(_TASK_DETAIL_CELL, task_id),
+            '班牛任务创建时间单元格未就绪或被配置为链接，未打开详情')
         self.page._click_once(locate(), resolve=locate)
         self.page._one('.task-details')
 
     def read_detail(self, request, before, task_id, *, not_before=None):
         snapshot = self.page._wait(lambda _: self.driver.execute_script(_DETAIL), "班牛任务详情尚未完整显示")
         return receipt_from_detail(snapshot, request, before, task_id, not_before=not_before)
+
+    def recover_receipt(self, request, before, context):
+        """只读补取丢失的回执；唯一任务、完整内容与新增内部单号均须吻合。"""
+        rows = self.query_tasks(request.order_no)
+        if 'previous_ids' in context:
+            candidates = [row for row in rows if row['task_id'] not in context['previous_ids']]
+        else:
+            start = datetime.fromisoformat(context['created_from'])
+            end = datetime.fromisoformat(context['created_to'])
+            try:
+                candidates = [row for row in rows if start <= datetime.strptime(
+                    row['created_at'], '%Y-%m-%d %H:%M:%S') <= end]
+            except (KeyError, ValueError, TypeError):
+                raise PlatformOperationError('班牛任务创建时间不完整，无法补读回执') from None
+        if len(candidates) != 1:
+            raise PlatformOperationError('班牛补读回执未找到唯一关联任务；禁止再次提交')
+        task = candidates[0]
+        self.open_task(request.order_no, task['task_id'])
+        snapshot = self.page._wait(lambda _: self.driver.execute_script(_DETAIL), '班牛任务详情尚未完整显示')
+        if snapshot.get('fields', {}).get('创建时间') != task['created_at']:
+            raise PlatformOperationError('班牛任务列表与详情时间不一致，无法补读回执')
+        receipt = receipt_from_detail(snapshot, request, before, task['task_id'])
+        if receipt is None:
+            raise PlatformOperationError('班牛回执仍未同步成功，保留待核查；禁止再次提交')
+        return {'receipt': asdict(receipt), 'banniu_recovered_task_id': task['task_id'],
+                'banniu_recovered_created_at': task['created_at']}
 
     def check_distinct_gifts(self, request, rows):
         """重登前逐项只读核对旧任务编码；同组合或不完整详情均不能重登。"""

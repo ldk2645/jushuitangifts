@@ -211,8 +211,8 @@ class Workflow:
                    evidence={"before_record_ids": [record.record_id for record in before.records],
                              "before_snapshot": asdict(before)})
             tracked = getattr(self.operations, "submit_registration_tracked", None)
-            receipt = (tracked(request, before, lambda: report("submitting", detail="班牛提交按钮已点击，正在读取回执",
-                                                              evidence={"submit_clicked": True}))
+            receipt = (tracked(request, before, lambda context=None: report("submitting", detail="班牛提交按钮已点击，正在读取回执",
+                                                              evidence={**(context or {}), "submit_clicked": True}))
                        if callable(tracked) else self.operations.submit_registration(request, before))
             validate_receipt(receipt)
             if receipt.accepted is not True:

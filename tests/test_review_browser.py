@@ -16,6 +16,28 @@ class Driver:
     def get(self, url): self.url=url
 
 class ReviewBrowserTests(unittest.TestCase):
+    def test_receipt_recovery_uses_separate_banniu_profile_without_login_save_or_submit(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = Mock()
+            store.load.return_value = dict(site='banniu', cookies=[], origins={})
+            lock, driver = Mock(), Driver()
+            factory = Mock(return_value=driver)
+            ops = ReadOnlyVerification(data_dir=folder, driver_factory=factory,
+                store_factory=lambda _: store, lock_factory=lambda _: lock, authenticated=lambda _: True)
+            with patch('gift_registry.banniu_page.BanniuPage') as page, \
+                    patch('gift_registry.banniu_receipt.BanniuReceiptReader') as reader, \
+                    patch('gift_registry.review_browser.quit_owned_driver', return_value={'closed': True}):
+                request, before = RegistrationRequest('SYN', ('SKU',), ('Gift',)), OrderSnapshot('SYN', True)
+                ops.recover_receipt(request, before, {'previous_ids': []})
+                reader.return_value.recover_receipt.assert_called_once_with(request, before, {'previous_ids': []})
+                self.assertEqual(factory.call_args.kwargs['profile'], Path(folder)/'browser_review'/'banniu')
+                page.return_value.submit.assert_not_called()
+                page.return_value.prepare.assert_not_called()
+                ops.close()
+            store.load.assert_called_once_with('banniu')
+            store.save.assert_not_called()
+            lock.release.assert_called_once()
+
     def test_internal_order_verification_uses_identity_only_in_independent_browser(self):
         with tempfile.TemporaryDirectory() as folder:
             ops = ReadOnlyVerification(data_dir=folder, authenticated=lambda _: True)

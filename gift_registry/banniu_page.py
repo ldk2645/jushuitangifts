@@ -543,7 +543,7 @@ class BanniuPage:
                     self._submitted_form_token = self._owned_form[2]
             self._click_once(button, on_click_started=mark_click_started)
             if on_submitted is not None:
-                on_submitted()
+                on_submitted({'banniu_before_task_ids': sorted(previous_ids)})
             self._wait(lambda _: not self._visible(self.driver, '.w-edit-task-dialog'),
                        "班牛提交后表单未关闭，结果不确定，请人工核查；禁止再次提交")
             self._forget_form()

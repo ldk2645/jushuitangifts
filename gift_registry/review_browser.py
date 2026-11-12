@@ -8,6 +8,9 @@ import threading
 import time
 from pathlib import Path
 
+from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.support.ui import WebDriverWait
+
 from .authentication import ENTRY_URLS, AuthenticationRequired, SessionAuthenticator
 from .browser import SiteBrowser, create_driver
 from .business_browser import ProfileLock
@@ -30,6 +33,7 @@ class ReadOnlyVerification:
         self.driver_factory, self.query_factory = driver_factory, query_factory
         self.authenticated = authenticated
         self.sleep, self.driver, self.page = sleep, None, None
+        self.receipt_driver = self.receipt_reader = None
         self.owner = None
         self.login_state = 'not_opened'
 
@@ -77,6 +81,40 @@ class ReadOnlyVerification:
     def query_verification_order(self, order_no):
         return self.query_order(order_no, identity_only=True)
 
+    def recover_receipt(self, request, before, context):
+        """独立配置只读班牛已存任务；不触及登记线程的页面和登录存储。"""
+        from .banniu_page import BanniuPage
+        from .banniu_receipt import BanniuReceiptReader
+        self._owned()
+        site = next(s for s in SITES if s.key == 'banniu')
+        def authenticate(**_):
+            checker = self.authenticated or SessionAuthenticator(site).is_authenticated
+            try:
+                # 班牛是异步页面，导航返回时标题/工作表尚可能未渲染完成。
+                WebDriverWait(self.receipt_driver, 30, poll_frequency=.5).until(
+                    lambda _: checker(self.receipt_driver))
+            except TimeoutException:
+                raise AuthenticationRequired('班牛补读回执会话不可用，请在主机核对登录；禁止重提') from None
+            return False
+        if self.receipt_driver is None:
+            self.lock.acquire()
+            try:
+                snapshot = self.store.load(site.key)
+                if not snapshot or snapshot.get('site') != site.key:
+                    raise PlatformOperationError('班牛补读回执会话缺失或站点不一致')
+                self.receipt_driver = self.driver_factory(site, profile=self.profile.parent / site.key)
+                restorer = SiteBrowser(site, None, authenticator=False)
+                restorer.driver = self.receipt_driver
+                restorer.restore(snapshot)
+                self.receipt_driver.get(ENTRY_URLS.get(site.key, site.url))
+                authenticate()
+                self.receipt_reader = BanniuReceiptReader(BanniuPage(self.receipt_driver, authenticate=authenticate))
+            except Exception:
+                self.close()
+                raise
+        authenticate()
+        return self.receipt_reader.recover_receipt(request, before, context)
+
     def wait_for_verification(self, request, before, receipt):
         for attempt in range(4):
             after = (self.query_verification_order(request.order_no) if receipt.created_record_ids
@@ -92,6 +130,11 @@ class ReadOnlyVerification:
 
     def close(self):
         self._owned()
+        if self.receipt_driver is not None:
+            result = quit_owned_driver(self.receipt_driver)
+            if not result.get('closed'):
+                raise PlatformOperationError('班牛回执核验浏览器未关闭，保留配置锁')
+            self.receipt_driver = self.receipt_reader = None
         if self.driver is not None:
             result = quit_owned_driver(self.driver)
             if not result.get('closed'):
