@@ -241,7 +241,7 @@ class VerificationRegressionTests(unittest.TestCase):
     def new_gift(self, record_id, gifts=GIFTS, reference="", quantities=(1, 1)):
         return GiftRecord(record_id, gifts, reference=reference, gift_quantities=quantities)
 
-    def test_receipt_ids_must_cover_every_new_record(self):
+    def test_receipt_ids_match_independently_of_other_new_records(self):
         request = self.request()
         before = self.before()
         old = before.records[0]
@@ -256,9 +256,9 @@ class VerificationRegressionTests(unittest.TestCase):
         success, detail, identifiers = verify_new_records(
             request, before, OrderSnapshot("00009", True, (old, new, extra)),
             SubmissionReceipt(True, created_record_ids=("new-1",)))
-        self.assertFalse(success)
+        self.assertTrue(success)
         self.assertIn("回执", detail)
-        self.assertEqual(identifiers, [])
+        self.assertEqual(identifiers, ["new-1"])
 
     def test_receipt_reference_must_cover_every_new_record(self):
         request = self.request()
@@ -279,7 +279,7 @@ class VerificationRegressionTests(unittest.TestCase):
         self.assertIn("凭证", detail)
         self.assertEqual(identifiers, [])
 
-    def test_missing_or_extra_gift_codes_fail_but_exact_set_succeeds(self):
+    def test_internal_order_match_does_not_require_exact_gift_codes(self):
         request = self.request()
         before = self.before()
         old = before.records[0]
@@ -289,9 +289,9 @@ class VerificationRegressionTests(unittest.TestCase):
                 success, detail, identifiers = verify_new_records(
                     request, before, OrderSnapshot("00009", True, (old, record)),
                     SubmissionReceipt(True, created_record_ids=("new",)))
-                self.assertFalse(success)
-                self.assertIn("礼品", detail)
-                self.assertEqual(identifiers, [])
+                self.assertTrue(success)
+                self.assertIn("内部订单号", detail)
+                self.assertEqual(identifiers, ["new"])
         record = self.new_gift("new")
         success, _, identifiers = verify_new_records(
             request, before, OrderSnapshot("00009", True, (old, record)),

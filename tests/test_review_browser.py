@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 from gift_registry.review_browser import ReadOnlyVerification
-from gift_registry.workflow import OrderSnapshot
+from gift_registry.workflow import OrderSnapshot, GiftRecord, RegistrationRequest, SubmissionReceipt
 
 class Driver:
     def __init__(self): self.calls=[]; self.driver_id=id(self)
@@ -16,6 +16,21 @@ class Driver:
     def get(self, url): self.url=url
 
 class ReviewBrowserTests(unittest.TestCase):
+    def test_internal_order_verification_uses_identity_only_in_independent_browser(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ops = ReadOnlyVerification(data_dir=folder, authenticated=lambda _: True)
+            ops.driver, ops.page = Driver(), Mock()
+            unrelated = OrderSnapshot('SYN', True, (GiftRecord('other', ()),))
+            matched = OrderSnapshot('SYN', True, unrelated.records + (GiftRecord('00049', ()),))
+            ops.page.query_order.side_effect = [unrelated, matched]
+            ops.sleep = Mock()
+            result = ops.wait_for_verification(RegistrationRequest('SYN', ('SKU',), ('Gift',)),
+                OrderSnapshot('SYN', True), SubmissionReceipt(True, created_record_ids=('00049',)))
+            self.assertEqual(result, matched)
+            self.assertEqual(ops.page.query_order.call_count, 2)
+            ops.page.query_order.assert_called_with('SYN', identity_only=True)
+            ops.sleep.assert_called_once_with(2)
+
     def test_isolated_profile_filtered_restore_read_only_session_and_owner(self):
         with tempfile.TemporaryDirectory() as folder:
             store=Mock(); store.load.return_value=dict(site='jushuitan', cookies=[

@@ -327,7 +327,9 @@ class BanniuReceiptReader:
                         raise PlatformOperationError("班牛待核验的新增任务发生变化；禁止再次提交")
                     candidate_id = task_id
                     self.open_task(request.order_no, task_id)
-                    receipt = self.read_detail(request, before, task_id, not_before=submitted_at)
+                    # 已从完整的提交前任务基线中排除旧任务，并锁定唯一新增任务。
+                    # 班牛服务端时间和本机时钟可能有偏差，不再用跨系统时间大小否决回执。
+                    receipt = self.read_detail(request, before, task_id)
                     if receipt is not None:
                         return receipt
             except ReceiptNumberNotReadyError as exc:

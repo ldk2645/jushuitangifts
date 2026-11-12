@@ -145,6 +145,18 @@ class PlatformOperationsTests(unittest.TestCase):
         self.assertEqual(self.sleep.call_count, 2)
         self.form.submit.assert_not_called()
 
+    def test_receipt_id_waits_past_unrelated_new_order_and_reads_only_identity(self):
+        unrelated = OrderSnapshot("00001", True, self.before.records + (GiftRecord("other", ()),))
+        matched = OrderSnapshot("00001", True, unrelated.records + (GiftRecord("000049", ()),))
+        self.query.query_order.side_effect = [unrelated, matched]
+        result = self.operations.wait_for_verification(self.request, self.before,
+            SubmissionReceipt(True, created_record_ids=("000049",)))
+        self.assertEqual(result, matched)
+        self.assertEqual(self.query.query_order.call_count, 2)
+        self.query.query_order.assert_called_with("00001", identity_only=True)
+        self.sleep.assert_called_once_with(2)
+        self.form.submit.assert_not_called()
+
     def test_no_new_record_has_a_finite_read_limit(self):
         self.query.query_order.return_value = self.before
         self.assertEqual(self.operations.wait_for_verification(self.request, self.before, SubmissionReceipt(True)), self.before)

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import webbrowser
+from socketserver import TCPServer
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import URLError
@@ -40,7 +41,10 @@ class LocalHTTPServer(ThreadingHTTPServer):
     def server_bind(self):
         if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-        super().server_bind()
+        # HTTPServer.server_bind 会对绑定地址做反向 DNS；局域网离线或 DNS 慢时
+        # 仅为未使用的 server_name 就阻塞整个启动。直接绑定数字地址即可。
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
     def request_shutdown(self):
         """排空已接收任务期间继续提供只读页面，不能先关端口造成假死。"""
@@ -172,6 +176,14 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
     row_store.selection_policy = SelectionPolicy(catalog_store, group_store)
     token = secrets.token_urlsafe(32)
 
+    def sheet_snapshot():
+        with row_store.lock, jobs.lock:
+            document = row_store.read()
+            identifiers = {row['id'] for row in document['rows']}
+            states = management.states() if identifiers else {}
+            return {**document, 'row_states': {key: value for key, value in states.items() if key in identifiers}}
+
+
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
             super().setup()
@@ -284,16 +296,16 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
                     return
                 self.send(200, {**self.server.maintenance.status(), 'queue': jobs.health()})
             elif path == "/api/rows":
-                with row_store.lock, jobs.lock:
-                    self.send(200, {**row_store.read(), "row_states": management.states()})
+                self.send(200, sheet_snapshot())
             elif path.startswith('/api/registrations/batches/'):
                 if not self.is_local_access():
                     self.send(403, {'error': '批次详情仅允许主机查看'})
                     return
                 self.send(200, jobs.retry_batch_status(path.rsplit('/', 1)[-1]))
             elif path == "/api/registrations/status":
-                self.send(200, {"row_states": management.states(), "workflow_configured": jobs.configured,
-                                "draft_revision": row_store.read()["revision"], "server_stopping": self.server.stopping})
+                snapshot = sheet_snapshot()
+                self.send(200, {"row_states": snapshot['row_states'], "workflow_configured": jobs.configured,
+                                "draft_revision": snapshot['revision'], "server_stopping": self.server.stopping})
             elif path in ('/api/registrations/task-logs','/api/registrations/task-logs/download'):
                 if not self.is_local_access():
                     self.send(403, {'error':'任务日志仅允许主机本地访问'}); return

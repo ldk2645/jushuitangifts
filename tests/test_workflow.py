@@ -110,13 +110,13 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(operations.trace, [])
         self.assertNotIn("submit_attempted", events[0])
 
-    def test_explicit_recipient_is_still_checked_for_historical_manual_verification(self):
+    def test_internal_order_match_does_not_require_historical_recipient(self):
         request = RegistrationRequest("00009", tuple(sample()["gift_ids"]), ("合成礼品甲", "合成礼品乙"), Recipient("合成姓名", "SYNTHETIC-PHONE", "合成地址"))
         before = OrderSnapshot("00009", True)
         after = OrderSnapshot("00009", True, (GiftRecord("new", request.gift_ids, request.recipient, gift_quantities=(1,) * len(request.gift_ids)),))
         self.assertTrue(verify_new_records(request, before, after, SubmissionReceipt(True, created_record_ids=("new",)))[0])
         missing = OrderSnapshot("00009", True, (GiftRecord("new", request.gift_ids, gift_quantities=(1,) * len(request.gift_ids)),))
-        self.assertFalse(verify_new_records(request, before, missing, SubmissionReceipt(True, created_record_ids=("new",)))[0])
+        self.assertTrue(verify_new_records(request, before, missing, SubmissionReceipt(True, created_record_ids=("new",)))[0])
 
     def test_changed_existing_record_is_never_counted_as_new(self):
         request = request_from_row(sample(), load_gifts())
@@ -124,7 +124,7 @@ class WorkflowTests(unittest.TestCase):
         after = OrderSnapshot(request.order_no, True, (GiftRecord("same-id", request.gift_ids, request.recipient, gift_quantities=(1,) * len(request.gift_ids)),))
         self.assertFalse(verify_new_records(request, before, after, SubmissionReceipt(True, created_record_ids=("new",)))[0])
 
-    def test_excess_quantity_and_repeated_sku_across_new_records_are_rejected(self):
+    def test_internal_order_match_is_not_blocked_by_quantity_or_repeated_sku(self):
         request = request_from_row(sample(), load_gifts())
         before = OrderSnapshot(request.order_no, True)
         scenarios = (
@@ -136,9 +136,9 @@ class WorkflowTests(unittest.TestCase):
             with self.subTest(records=records):
                 after = OrderSnapshot(request.order_no, True, records)
                 success, detail, identifiers = verify_new_records(request, before, after, SubmissionReceipt(True, created_record_ids=tuple(r.record_id for r in records)))
-                self.assertFalse(success)
-                self.assertIn("数量", detail)
-                self.assertEqual(identifiers, [])
+                self.assertTrue(success)
+                self.assertIn("内部订单号", detail)
+                self.assertEqual(identifiers, [r.record_id for r in records])
 
     def test_original_quantity_greater_than_one_does_not_count_against_new_gifts(self):
         request = request_from_row(sample(), load_gifts())
@@ -157,13 +157,47 @@ class WorkflowTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     validate_snapshot(OrderSnapshot("00009", True, (record,)), "00009")
 
-    def test_record_ids_and_reference_must_both_match_when_both_are_supplied(self):
+    def test_internal_order_ids_take_precedence_over_secondary_reference(self):
         request = request_from_row(sample(), load_gifts())
         before = OrderSnapshot(request.order_no, True)
         after = OrderSnapshot(request.order_no, True,
                               (GiftRecord("new", request.gift_ids, request.recipient, "other-reference", gift_quantities=(1,) * len(request.gift_ids)),))
         receipt = SubmissionReceipt(True, "expected-reference", ("new",))
-        self.assertFalse(verify_new_records(request, before, after, receipt)[0])
+        self.assertTrue(verify_new_records(request, before, after, receipt)[0])
+
+    def test_only_receipt_ids_are_recorded_when_other_orders_are_added(self):
+        request = request_from_row(sample(), load_gifts())
+        before = OrderSnapshot(request.order_no, True, (GiftRecord("old", ()),))
+        receipt = SubmissionReceipt(True, created_record_ids=("000049",))
+        for gifts, quantities in (((), ()), (("OTHER-SKU",), (5,)), (("SKU",), ())):
+            with self.subTest(gifts=gifts, quantities=quantities):
+                after = OrderSnapshot(request.order_no, True, before.records + (
+                    GiftRecord("unrelated", ()), GiftRecord("000049", gifts, gift_quantities=quantities)))
+                success, _, identifiers = verify_new_records(request, before, after, receipt)
+                self.assertTrue(success)
+                self.assertEqual(identifiers, ["000049"])
+
+    def test_internal_order_ids_preserve_leading_zeros_and_do_not_use_substring_matching(self):
+        request = request_from_row(sample(), load_gifts())
+        before = OrderSnapshot(request.order_no, True)
+        receipt = SubmissionReceipt(True, created_record_ids=("000049",))
+        for identifier in ("49", "1000049", "0000490"):
+            with self.subTest(identifier=identifier):
+                after = OrderSnapshot(request.order_no, True, (GiftRecord(identifier, ()),))
+                self.assertFalse(verify_new_records(request, before, after, receipt)[0])
+
+    def test_internal_order_match_still_rejects_wrong_order_duplicate_ids_and_rejection(self):
+        request = request_from_row(sample(), load_gifts())
+        before = OrderSnapshot(request.order_no, True)
+        record = GiftRecord("000049", ())
+        receipt = SubmissionReceipt(True, created_record_ids=(record.record_id,))
+        for after in (OrderSnapshot("other", True, (record,)),
+                      OrderSnapshot(request.order_no, True, (record, record))):
+            with self.subTest(after=after), self.assertRaises(ValueError):
+                verify_new_records(request, before, after, receipt)
+        self.assertFalse(verify_new_records(request, before,
+            OrderSnapshot(request.order_no, True, (record,)),
+            SubmissionReceipt(False, created_record_ids=(record.record_id,)))[0])
 
     def test_all_receipt_record_ids_must_be_new_and_present(self):
         request = request_from_row(sample(), load_gifts())

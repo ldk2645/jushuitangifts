@@ -108,6 +108,17 @@ class ReceiptDetailTests(unittest.TestCase):
 
 
 class ReceiptPollingTests(unittest.TestCase):
+    def test_new_task_baseline_accepts_server_time_behind_local_clock(self):
+        reader = self.reader()
+        reader.query_tasks.return_value = [task(identifier="000051"), task()]
+        snapshot = detail()
+        snapshot["fields"]["创建时间"] = "2026-10-23 09:58:00"
+        reader.read_detail.side_effect = lambda *args, **kwargs: receipt_from_detail(snapshot, *args, **kwargs)
+        result = reader.wait_for_receipt(REQUEST, BEFORE, {"000051"}, SUBMITTED_AT, queries=1)
+        self.assertEqual(result.created_record_ids, ("000049",))
+        reader.read_detail.assert_called_once_with(REQUEST, BEFORE, TASK)
+        self.assertEqual(reader.page.mock_calls, [])
+
     def test_delayed_new_number_can_replace_old_number_only_on_same_matching_task(self):
         reader = self.reader()
         reader.query_tasks.return_value = [task()]
@@ -174,7 +185,7 @@ class ReceiptPollingTests(unittest.TestCase):
         self.assertEqual(reader.query_tasks.call_count, 3)
         self.assertEqual(reader.open_task.call_count, 2)
         reader.open_task.assert_called_with(ORDER, TASK)
-        reader.read_detail.assert_called_with(REQUEST, BEFORE, TASK, not_before=SUBMITTED_AT)
+        reader.read_detail.assert_called_with(REQUEST, BEFORE, TASK)
         self.assertEqual(sleep.call_count, 2)
         self.assertEqual(reader.page.mock_calls, [])
 

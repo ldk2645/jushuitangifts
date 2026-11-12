@@ -1978,12 +1978,13 @@ $("#network-ack").addEventListener("click", async () => {
   const buttons = [...document.querySelectorAll(".toolbar button,#add-bottom,#login-button,#toggle-fullscreen")];
   buttons.forEach(button => { button.disabled = true; });
   try {
-    const config = await api("/api/config"); token = config.token; giftCatalog = config.gifts || []; catalogEditable = config.frontend_version >= 4;
+    const [config, document] = await Promise.all([api("/api/config"), api("/api/rows")]);
+    token = config.token; giftCatalog = config.gifts || []; catalogEditable = config.frontend_version >= 4;
     giftGroups = config.gift_groups || giftGroups; catalogVersion = config.catalog_version || ""; restoreScope(); renderGroupFilter();
     hostActionsAvailable = config.host_actions_available === true;
     $("#picker-manage-groups").hidden = !hostActionsAvailable;
     if (!giftCatalog.length) throw new Error("未配置礼品选项，请重启工作台");
-    const document = await api("/api/rows"); revision = document.revision; rowStates = document.row_states || {};
+    revision = document.revision; rowStates = document.row_states || {};
     rows = document.rows.length ? document.rows : Array.from({ length: 18 }, newRow);
     const before = JSON.stringify(rows);
     // Shared drafts keep confirmed codes and unresolved text; loading never reinterprets them with this device's scope.

@@ -159,7 +159,7 @@ class FormAuthenticationGuardsTests(unittest.TestCase):
         button.click.assert_called_once()
         reader.wait_for_receipt.assert_called_once()
 
-    def test_receipt_detail_login_recovery_preserves_original_baseline_and_time(self):
+    def test_receipt_detail_login_recovery_preserves_original_baseline_and_task(self):
         guard = Mock(return_value=True)
         page = BanniuPage(Mock(), authenticate=guard)
         page.submit = Mock()
@@ -176,7 +176,7 @@ class FormAuthenticationGuardsTests(unittest.TestCase):
         self.assertEqual(result.created_record_ids, ("00010",))
         self.assertEqual(original_ids, {"00001"})
         self.assertEqual(reader.query_tasks.call_args_list, [call(ORDER), call(ORDER)])
-        self.assertEqual(reader.read_detail.call_args_list, [call(REQUEST, BEFORE, "00002", not_before=submitted_at)] * 2)
+        self.assertEqual(reader.read_detail.call_args_list, [call(REQUEST, BEFORE, "00002")] * 2)
         page.submit.assert_not_called()
         guard.assert_called_once_with()
 

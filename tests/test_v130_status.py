@@ -30,15 +30,13 @@ class ClickWithoutReceipt:
 
 
 class StatusEvidenceTests(unittest.TestCase):
-    def test_missing_quantity_cannot_be_assumed_one(self):
+    def test_matching_internal_order_succeeds_without_quantity(self):
         request = RegistrationRequest('SYN-ORDER', ('SYN-01',), ('合成礼品',))
         before = OrderSnapshot(request.order_no, True)
         after = OrderSnapshot(request.order_no, True, (GiftRecord('SYN-DOC', request.gift_ids),))
-        try:
-            success, _, _ = verify_new_records(request, before, after, SubmissionReceipt(True, created_record_ids=('SYN-DOC',)))
-        except ValueError:
-            success = False
-        self.assertFalse(success, 'missing quantity must not become evidence of one item')
+        success, _, identifiers = verify_new_records(request, before, after, SubmissionReceipt(True, created_record_ids=('SYN-DOC',)))
+        self.assertTrue(success)
+        self.assertEqual(identifiers, ['SYN-DOC'])
 
     def test_accepted_without_link_cannot_attribute_another_actors_new_record(self):
         request = RegistrationRequest('SYN-ORDER', ('SYN-01',), ('合成礼品',))

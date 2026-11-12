@@ -66,6 +66,10 @@ class SeleniumOperations:
     def query_order(self, order_no):
         return self._jushuitan().query_order(order_no)
 
+    def query_verification_order(self, order_no):
+        """复核只读取订单身份，不依赖折叠或延迟加载的商品明细。"""
+        return self._jushuitan().query_order(order_no, identity_only=True)
+
     def prepare_registration(self, request, before):
         """开发核对用：填写后停在提交前，绝不创建远端任务。"""
         self._validate_baseline(request, before)
@@ -117,13 +121,14 @@ class SeleniumOperations:
         return True
 
     def wait_for_verification(self, request, before, receipt):
-        """有界只读复查；新增信息不一致时立即交给统一核验判失败。"""
+        """有界只读复查；有内部订单号时等待回执对应订单出现。"""
         previous_ids = {record.record_id for record in before.records}
         for attempt in range(self.verification_queries):
-            after = self.query_order(request.order_no)
+            after = (self.query_verification_order(request.order_no) if receipt.created_record_ids
+                     else self.query_order(request.order_no))
             success, _, _ = verify_new_records(request, before, after, receipt)
             added = any(record.record_id not in previous_ids for record in after.records)
-            if success or added or not after.found:
+            if success or (added and not receipt.created_record_ids) or not after.found:
                 return after
             if attempt + 1 < self.verification_queries:
                 self.sleep(self.verification_interval)

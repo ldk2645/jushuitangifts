@@ -48,7 +48,7 @@ class ReadOnlyVerification:
         self.login_state = 'authenticated'
         return False
 
-    def query_order(self, order_no):
+    def query_order(self, order_no, *, identity_only=False):
         self._owned()
         if self.driver is None:
             self.lock.acquire()
@@ -71,13 +71,19 @@ class ReadOnlyVerification:
                 self.close()
                 raise
         self._authenticate()
-        return self.page.query_order(order_no)
+        return (self.page.query_order(order_no, identity_only=True) if identity_only
+                else self.page.query_order(order_no))
+
+    def query_verification_order(self, order_no):
+        return self.query_order(order_no, identity_only=True)
 
     def wait_for_verification(self, request, before, receipt):
         for attempt in range(4):
-            after = self.query_order(request.order_no)
+            after = (self.query_verification_order(request.order_no) if receipt.created_record_ids
+                     else self.query_order(request.order_no))
             if (verify_new_records(request, before, after, receipt)[0]
-                    or {r.record_id for r in after.records} - {r.record_id for r in before.records}
+                    or (not receipt.created_record_ids and
+                        {r.record_id for r in after.records} - {r.record_id for r in before.records})
                     or not after.found):
                 return after
             if attempt < 3:

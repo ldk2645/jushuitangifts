@@ -16,6 +16,15 @@ def sample_row(identifier="000048", online="0000611991816470192", sku="000SKU001
 
 
 class OrderRowsTests(unittest.TestCase):
+    def test_verification_reads_ids_without_product_tooltips_or_quantities(self):
+        row = {"index": "0", "internal_id": "000049", "order_no": "00001"}
+        snapshot = parse_order_rows("00001", [row], "总共 1 页 1 条记录", identity_only=True)
+        self.assertEqual(snapshot.records[0].record_id, "000049")
+        self.assertEqual(snapshot.records[0].gift_ids, ())
+        for rows in ([row, row], [{**row, "order_no": "other"}], [{**row, "internal_id": 49}]):
+            with self.subTest(rows=rows), self.assertRaises(PlatformOperationError):
+                parse_order_rows("00001", rows, f"总共 1 页 {len(rows)} 条记录", identity_only=True)
+
     def test_ids_and_order_are_strings_without_collecting_recipient(self):
         row = sample_row()
         snapshot = parse_order_rows(row["order_no"], [row], "总共 1 页 1 条记录")
@@ -177,6 +186,27 @@ class FakeDriver:
 
 
 class JushuitanQueryTests(unittest.TestCase):
+    def test_verification_query_completes_with_collapsed_product_details(self):
+        driver = FakeDriver()
+        execute = driver.execute_script
+
+        def read_ids(script, *args):
+            if "gift-grid-state" in script:
+                self.assertEqual(args[0], "order_ids")
+                result = execute(script, *args)
+                result["rows"] = [{key: row[key] for key in ("index", "internal_id", "order_no")}
+                                  for row in result["rows"]]
+                return result
+            if "gift-grid-scroll" in script:
+                self.assertEqual(args[0], "order_ids")
+            return execute(script, *args)
+
+        driver.execute_script = read_ids
+        result = JushuitanPage(driver, timeout=.01).query_order("00001", identity_only=True)
+        self.assertEqual(result.records[0].record_id, "000048")
+        self.assertEqual(result.records[0].gift_ids, ())
+        self.assertEqual(driver.elements["so_id"].keys, ["00001", Keys.ENTER])
+
     def test_virtual_rows_are_collected_across_scrolling(self):
         class GridDriver(FakeDriver):
             position = 0

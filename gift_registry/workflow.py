@@ -96,7 +96,7 @@ def _validate_recipient(recipient):
         raise ValueError("聚水潭收件信息缺失或不是文本")
 
 
-def validate_snapshot(snapshot, order_no):
+def validate_snapshot(snapshot, order_no, *, identity_only=False):
     if (not isinstance(snapshot, OrderSnapshot) or not _nonempty_text(order_no)
             or not _nonempty_text(snapshot.order_no) or snapshot.order_no != order_no
             or type(snapshot.found) is not bool):
@@ -106,6 +106,8 @@ def validate_snapshot(snapshot, order_no):
     identifiers = [record.record_id for record in snapshot.records]
     if any(not _nonempty_text(identifier) for identifier in identifiers) or len(set(identifiers)) != len(identifiers):
         raise ValueError("聚水潭记录缺少稳定且唯一的标识")
+    if identity_only:
+        return
     _validate_recipient(snapshot.recipient)
     for record in snapshot.records:
         if (not isinstance(record.gift_ids, (tuple, list)) or not record.gift_ids
@@ -131,10 +133,10 @@ def validate_receipt(receipt):
 
 
 def verify_new_records(request, before, after, receipt):
-    """只接受提交前不存在、且订单 / 礼品 / 必要地址信息正确的新记录。"""
-    validate_snapshot(before, request.order_no)
-    validate_snapshot(after, request.order_no)
+    """回执内部订单号匹配新增订单即可成功；旧关联凭证兼容原核验。"""
     validate_receipt(receipt)
+    validate_snapshot(before, request.order_no, identity_only=bool(receipt.created_record_ids))
+    validate_snapshot(after, request.order_no, identity_only=bool(receipt.created_record_ids))
     if not before.found or not receipt.accepted:
         return False, "原订单或班牛提交状态未确认", []
     if not receipt.created_record_ids and not receipt.reference.strip():
@@ -144,8 +146,8 @@ def verify_new_records(request, before, after, receipt):
 
 def verify_added_records(request, before, after, expected_ids=(), reference=""):
     """首次核验及延迟复核共用差异检查；调用方另行核对本次提交依据。"""
-    validate_snapshot(before, request.order_no)
-    validate_snapshot(after, request.order_no)
+    validate_snapshot(before, request.order_no, identity_only=bool(expected_ids))
+    validate_snapshot(after, request.order_no, identity_only=bool(expected_ids))
     if not before.found:
         return False, "原订单基线不存在", []
     if not after.found:
@@ -154,9 +156,11 @@ def verify_added_records(request, before, after, expected_ids=(), reference=""):
     added = [record for record in after.records if record.record_id not in previous_ids]
     if expected_ids:
         expected_ids = set(expected_ids)
-        if {record.record_id for record in added} != expected_ids:
-            # 回执之外的新增记录同样属于本次复查范围，不能过滤掉后按其余记录判成功。
-            return False, "聚水潭新增记录与本次提交回执不一致", []
+        if not expected_ids.issubset({record.record_id for record in added}):
+            return False, "聚水潭尚未找到与班牛回执内部订单号一致的新增订单", []
+        # 内部订单号是跨平台关联依据。其它新增单据和商品展示不影响本次结果。
+        return True, "班牛回执内部订单号与聚水潭新增订单一致，登记成功", [
+            record.record_id for record in added if record.record_id in expected_ids]
     if reference:
         if any(record.reference != reference for record in added):
             return False, "聚水潭新增记录的关联凭证与本次提交不一致", []

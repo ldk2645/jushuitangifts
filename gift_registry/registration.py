@@ -807,9 +807,13 @@ class RegistrationQueue(RetryBatches, JobStorage):
         identifiers, success = [], False
         try:
             request = request_from_row(record["row"], record["catalog"])
-            after = (operations or self.operations).query_order(request.order_no)
-            validate_snapshot(after, request.order_no)
             evidence = record["item"].get("evidence", {})
+            receipt_data = evidence.get("receipt") or {}
+            identity_only = bool(receipt_data.get("created_record_ids"))
+            verifier = operations or self.operations
+            query = getattr(verifier, "query_verification_order", None) if identity_only else None
+            after = (query if callable(query) else verifier.query_order)(request.order_no)
+            validate_snapshot(after, request.order_no, identity_only=identity_only)
             raw = evidence.get("before_snapshot")
             if not raw or raw.get("recipient") is not None or request.recipient is not None:
                 raise PlatformOperationError("缺少本次登记的完整原始基线，不能自动确认成功")
@@ -843,7 +847,7 @@ class RegistrationQueue(RetryBatches, JobStorage):
                     item.setdefault("display_updated_at", item.get("updated_at", job["created_at"]))
                     item["review_result"] = {"at": now(), "success": success, "detail": detail}
                     if success:
-                        item.update(state="success", detail="自动复核成功：聚水潭新增记录与本次礼赠一致", updated_at=now(),
+                        item.update(state="success", detail="自动复核成功：" + detail, updated_at=now(),
                                     review_original_completed_at=record["completed_at"])
                         item.setdefault("evidence", {})["verified_record_ids"] = identifiers
                         item["events"].append({"state": "success", "at": now(), "detail": item["detail"], "source": "auto_review"})

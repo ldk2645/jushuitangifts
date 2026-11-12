@@ -35,15 +35,22 @@ def label_matches(row, gifts):
 def migrate_legacy_selections(rows, gifts, jobs):
     """In-memory compatibility only. No historical file or display-name snapshot is rewritten."""
     unresolved = [row for row in rows if 'gift_selection' not in row]
-    proven = set()
-    for path in jobs._paths() if unresolved else []:
+    def identity(row):
+        return (row.get('order_no', '').strip(), tuple(sorted(set(row.get('gift_ids', [])))), row.get('gift', ''))
+    proven = {identity(row) for row in unresolved if label_matches(row, gifts)}
+    needed = {identity(row) for row in unresolved if row.get('gift_ids') and row.get('gift', '').strip()} - proven
+    for path in jobs._paths() if needed else []:
         job = jobs._load(path)
         for old in job['rows']:
-            if label_matches(old, job.get('gift_catalog', [])):
-                proven.add((old.get('order_no', '').strip(), tuple(sorted(set(old.get('gift_ids', [])))), old.get('gift', '')))
+            key = identity(old)
+            if key in needed and label_matches(old, job.get('gift_catalog', [])):
+                proven.add(key)
+                needed.remove(key)
+        if not needed:
+            break
     for row in unresolved:
         key = (row['order_no'].strip(), tuple(sorted(set(row['gift_ids']))), row['gift'])
-        confirmed = label_matches(row, gifts) or key in proven
+        confirmed = key in proven
         row['gift_unmatched'] = [] if confirmed or not row['gift'].strip() else [row['gift']]
         row['gift_selection'] = {'source': 'legacy', 'gift_ids': list(row['gift_ids']),
                                  'label': row['gift'], 'confirmed': confirmed}

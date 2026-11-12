@@ -38,7 +38,7 @@ def page_count(text):
     return total
 
 
-def parse_order_rows(order_no, rows, pager_text):
+def parse_order_rows(order_no, rows, pager_text, *, identity_only=False):
     """将已完整采集的 UI 行转换为业务快照，不猜测原订单行或关联凭证。"""
     if not isinstance(order_no, str) or not order_no.strip():
         raise PlatformOperationError("聚水潭查询订单号必须是非空文本")
@@ -56,6 +56,9 @@ def parse_order_rows(order_no, rows, pager_text):
         identifiers.add(internal_id)
         if row.get("order_no") != order_no:
             raise PlatformOperationError("聚水潭结果中包含不匹配的线上订单号")
+        if identity_only:
+            records.append(GiftRecord(internal_id, ()))
+            continue
         gift_ids = []
         quantities = []
         for item in row.get("items", []):
@@ -120,10 +123,12 @@ const mode = arguments[0];
 const text = (node) => node ? (node.innerText || '').trim() : null;
 const rows = [...document.querySelectorAll('#_jt_body_list .rowList ._jt_row[index]')].map(row => {
   const index = row.getAttribute('index');
-  if (mode === 'identity') {
+  if (mode === 'identity' || mode === 'order_ids') {
     const order = row.querySelector('[data-id="so_id"]');
     const online = order ? [...order.childNodes].filter(n=>n.nodeType===Node.TEXT_NODE)
         .map(n=>n.textContent).join('').trim() : null;
+    const internal_id = text(row.querySelector('[data-id="o_id"] .o_id'));
+    if (mode === 'order_ids') return {index, internal_id, order_no:online};
     const items = [...row.querySelectorAll('[data-id="its"] div[title]')]
       .map(item=>({title:item.getAttribute('title'), quantity:text(item.querySelector('.sku_qty'))}));
     return {index, internal_id:text(row.querySelector('[data-id="o_id"] .o_id')),
@@ -140,7 +145,7 @@ return {rows, top:body.scrollTop, height:body.clientHeight, max:Math.max(0, body
 _SCROLL = """
 // gift-grid-scroll: UI scrolling only.
 const body = document.getElementById('_jt_body');
-if (arguments[0] === 'identity') body.scrollLeft = 0;
+if (arguments[0] === 'identity' || arguments[0] === 'order_ids') body.scrollLeft = 0;
 else {
   const head = document.querySelector('#_jt_row_head_list [data-id="address"]');
   const list = document.getElementById('_jt_row_head_list');
@@ -188,7 +193,7 @@ class JushuitanPage:
 
         self._wait(revealed, "聚水潭收件信息解密未完成，无法核验姓名、电话和地址")
 
-    def _query(self, order_no):
+    def _query(self, order_no, *, mode="identity"):
         self.driver.switch_to.default_content()
         # 同一浏览器内复用已就绪的订单页；下面仍逐次输入、回车并确认新刷新。
         if (self.driver.current_url != ORDER_URL
@@ -221,13 +226,13 @@ class JushuitanPage:
                 state = self.driver.execute_script(_READ_REFRESH)
                 if not (state and state.get("changed") and state.get("age", 0) >= 600):
                     return False
-                grid = self.driver.execute_script(_GRID_STATE, "identity")
+                grid = self.driver.execute_script(_GRID_STATE, mode)
                 if not _PAGER.search(grid.get("pager") or ""):
                     return False
                 total = page_count(grid["pager"])
                 if not total:
                     return grid if not grid["rows"] else False
-                return grid if self._ready_rows(grid["rows"], "identity") and all(
+                return grid if self._ready_rows(grid["rows"], mode) and all(
                     row["order_no"] == order_no for row in grid["rows"]) else False
             return self._wait(refreshed, "聚水潭查询未确认刷新，不能使用页面原有结果")
         finally:
@@ -235,6 +240,8 @@ class JushuitanPage:
 
     @staticmethod
     def _ready_rows(rows, mode):
+        if mode == "order_ids":
+            return bool(rows) and all(row.get("internal_id") and row.get("order_no") for row in rows)
         if mode == "identity":
             return bool(rows) and all(row.get("internal_id") and row.get("order_no")
                                       and row.get("items") and row.get("total_quantity") is not None
@@ -285,33 +292,35 @@ class JushuitanPage:
             position = min(state["max"], state["top"] + max(1, state["height"] * .7))
         return collected
 
-    def query_order(self, order_no):
+    def query_order(self, order_no, *, identity_only=False):
         if not isinstance(order_no, str) or not order_no.strip():
             raise PlatformOperationError("聚水潭查询订单号必须是非空文本")
         for attempt in range(2):
             try:
-                return self._query_order_once(order_no)
+                return (self._query_order_once(order_no, identity_only=True) if identity_only
+                        else self._query_order_once(order_no))
             except PlatformOperationError:
                 # 只读采集被登录打断时，只有明确恢复了认证才完整重查一次。
                 if attempt or self.authenticate is None or not self.authenticate():
                     raise
 
-    def _query_order_once(self, order_no):
+    def _query_order_once(self, order_no, *, identity_only=False):
         try:
-            refreshed = self._query(order_no)
+            mode = "order_ids" if identity_only else "identity"
+            refreshed = self._query(order_no, mode=mode) if identity_only else self._query(order_no)
             pager = refreshed["pager"]
             total = page_count(pager)
             if not total:
-                state = self.driver.execute_script(_GRID_STATE, "identity")
+                state = self.driver.execute_script(_GRID_STATE, mode)
                 if state["rows"]:
                     raise PlatformOperationError("聚水潭分页显示无记录但表格仍有旧数据")
                 return OrderSnapshot(order_no, False)
-            identities = self._collect("identity", total, pager)
-            # 复读稳定标识和商品，避免虚拟表格在采集期间变动。
-            if self._collect("identity", total, pager) != identities:
+            identities = self._collect(mode, total, pager)
+            # 复核只复读订单身份，不让异步变化的商品明细阻断内部订单号核验。
+            if self._collect(mode, total, pager) != identities:
                 raise PlatformOperationError("聚水潭读取前后订单行不一致")
             rows = [identities[index] for index in sorted(identities, key=int)]
-            return parse_order_rows(order_no, rows, pager)
+            return parse_order_rows(order_no, rows, pager, identity_only=identity_only)
         except PlatformOperationError:
             raise
         except WebDriverException:

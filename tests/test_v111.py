@@ -16,7 +16,7 @@ from gift_registry.gift_catalog import GiftCatalogStore
 from gift_registry.gift_groups import GiftGroupStore, GroupConflict
 from gift_registry.maintenance import MaintenanceService, CHINA
 from gift_registry.registration import RegistrationQueue, row_signature, now
-from gift_registry.workflow import GiftRecord, OrderSnapshot, PlatformOperationError
+from gift_registry.workflow import GiftRecord, OrderSnapshot, PlatformOperationError, SubmissionReceipt
 from test_host_management import CATALOG, row
 
 
@@ -78,6 +78,55 @@ class IsolatedQueue(unittest.TestCase):
 
 
 class AutoReviewTests(IsolatedQueue):
+    def test_three_minute_review_matches_receipt_id_without_items_and_persists_success(self):
+        submit = self.operations.submit_registration
+
+        def submit_with_id(request, before):
+            submit(request, before)
+            return SubmissionReceipt(True, "secondary-reference", ("000049",))
+
+        self.operations.submit_registration = submit_with_id
+        due = self.fail_order()
+        queries = []
+
+        def query_ids(order):
+            queries.append(order)
+            return OrderSnapshot(order, True, (
+                GiftRecord("old-" + order, ()), GiftRecord("unrelated", ()), GiftRecord("000049", ())))
+
+        self.operations.query_verification_order = query_ids
+        def unexpected_product_query(_):
+            raise AssertionError("复核不应读取商品明细")
+        self.operations.query_order = unexpected_product_query
+        self.assertEqual(self.jobs.enqueue_due_reviews(due - timedelta(seconds=1)), 0)
+        self.assertEqual(self.jobs.enqueue_due_reviews(due), 1)
+        self.jobs.pending.join()
+        state = self.jobs.states()["row-1"]
+        self.assertEqual(state["state"], "success")
+        self.assertTrue(state["review_result"]["success"])
+        self.assertEqual(queries, [row()["order_no"]])
+        self.assertEqual(self.jobs.daily_records()[1][0]["internal_order_ids"], ["000049"])
+        self.assertEqual(len(self.operations.submissions), 1)
+        self.jobs.close()
+        self.jobs = RegistrationQueue(self.folder / "jobs", operations=self.operations)
+        self.assertEqual(self.jobs.states()["row-1"]["state"], "success")
+        self.assertEqual(self.jobs.enqueue_due_reviews(due + timedelta(days=1)), 0)
+
+    def test_three_minute_review_rejects_other_internal_order_without_resubmit(self):
+        submit = self.operations.submit_registration
+
+        def submit_with_id(request, before):
+            submit(request, before)
+            return SubmissionReceipt(True, created_record_ids=("000049",))
+
+        self.operations.submit_registration = submit_with_id
+        due = self.fail_order()
+        self.operations.query_verification_order = lambda order: OrderSnapshot(order, True, (GiftRecord("49", ()),))
+        self.assertEqual(self.jobs.enqueue_due_reviews(due), 1)
+        self.jobs.pending.join()
+        self.assertEqual(self.jobs.states()["row-1"]["state"], "failed")
+        self.assertEqual(len(self.operations.submissions), 1)
+        self.assertEqual(self.jobs.enqueue_due_reviews(due + timedelta(days=1)), 0)
     def test_new_schedule_is_exactly_three_minutes_and_never_reset(self):
         fixed = '2026-10-30T10:00:00+08:00'
         item = {}
