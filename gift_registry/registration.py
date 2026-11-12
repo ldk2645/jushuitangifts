@@ -198,7 +198,6 @@ class RegistrationQueue(RetryBatches, JobStorage):
                     else:
                         record.update(status="interrupted", detail="自动复核中断，未重复查询或提交")
                     atomic_write(path, json.dumps(record, ensure_ascii=False).encode("utf-8"))
-            self._restore_retry_batches()
             for path in self._paths():
                 job = self._load(path)
                 for row, item in zip(job['rows'], job['items']):
@@ -213,6 +212,7 @@ class RegistrationQueue(RetryBatches, JobStorage):
                     if self.worker is None or not self.worker.is_alive():
                         self.worker = threading.Thread(target=self._work, name='registration-worker', daemon=True)
                         self.worker.start()
+            self._restore_retry_batches()
         except BaseException:
             self._directory_lock.close()
             raise
@@ -1092,6 +1092,9 @@ class RegistrationQueue(RetryBatches, JobStorage):
                     target = self._current_item(path, index)
                     target.setdefault("execution_id", uuid.uuid4().hex)
                     evidence = updates.pop("evidence", None)
+                    if (self.dual_verification and state == 'failed'
+                            and updates.get('submission_status', target.get('submission_status')) == 'uncertain'):
+                        state = 'manual_required'
                     target.update(state=state, updated_at=now(), **updates)
                     if state == 'querying':
                         target.setdefault('started_at', now())

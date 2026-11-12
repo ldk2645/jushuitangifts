@@ -2,6 +2,8 @@ import json
 import tempfile
 import threading
 import unittest
+from dataclasses import asdict
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -97,5 +99,60 @@ class VerificationTests(unittest.TestCase):
             main=Main(); jobs=RegistrationQueue(folder,main,dual_verification=False)
             jobs.start([row('a'),row('b')],CATALOG); jobs.pending.join()
             self.assertEqual([v['state'] for v in jobs.states().values()],['success','success']); jobs.close()
+
+    def test_thousand_rows_bounded_backpressure_and_fair_delayed_review(self):
+        with tempfile.TemporaryDirectory() as folder:
+            main=Main(); review=Review(main,block=True); order=[]; original=review.query_order
+            def query(identifier):
+                order.append(identifier); return original(identifier)
+            review.query_order=query
+            jobs=RegistrationQueue(folder,main,dual_verification=True,verification_operations=review)
+            jobs.verification.LIMIT=4
+            seed=row('seed'); item=jobs._item(seed); stamp=datetime.now().astimezone().isoformat()
+            item.update(state='failed',submit_attempted=True,attempts=1,submission_status='submitted',
+                        evidence=dict(before_snapshot=asdict(OrderSnapshot(seed['order_no'],True)),submit_clicked=True,
+                                      receipt=asdict(SubmissionReceipt(True,'ref-'+seed['order_no'],('record-'+seed['order_no'],)))),
+                        review_due_at=stamp,review_delay_seconds=180)
+            jobs._save(jobs.directory/'seed.json',dict(id='seed',created_at=stamp,rows=[seed],items=[item],gift_catalog=CATALOG))
+            with patch.object(jobs.verification,'wake'):
+                self.assertEqual(jobs.enqueue_due_reviews(datetime.now().astimezone()+timedelta(seconds=1)),1)
+            observed=[]; handoff=jobs.verification.handoff
+            def measured(*args):
+                handoff(*args); observed.append(jobs.verification.backlog())
+            jobs.verification.handoff=measured
+            try:
+                jobs.start([row(i) for i in range(1000)],CATALOG)
+                self.assertTrue(review.entered.wait(5))
+                # The primary can accept only LIMIT outstanding handoffs while
+                # the verifier is held; it cannot build an unbounded queue.
+                self.assertLessEqual(jobs.verification.backlog(),4)
+                review.release.set(); jobs.pending.join(); jobs.verification.join()
+                self.assertLessEqual(max(observed),4); self.assertEqual(len(main.submitted),1000)
+                self.assertLessEqual(order.index(seed['order_no']),3)
+                self.assertEqual(jobs.states()['seed']['state'],'success')
+                states=jobs.states()
+                self.assertTrue(all(states[str(i)]['state']=='success' for i in range(1000)))
+            finally:
+                review.release.set(); jobs.pending.join(); jobs.verification.join(); jobs.close()
+
+    def test_handoff_before_item_write_crash_repaired_and_stale_completion_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            main=Main(); review=Review(main,block=True)
+            jobs=RegistrationQueue(folder,main,dual_verification=True,verification_operations=review)
+            with patch.object(jobs.verification,'wake'):
+                jobs.start([row('a')],CATALOG);jobs.pending.join()
+            path,record=jobs.verification.records()[0]; jp=jobs.directory/record['path']
+            # Reconstruct the pre-projection crash boundary from durable data.
+            job=jobs._load(jp); item=job['items'][0]; item['state']='submitting'; item['state_version']=record['state_version']-1
+            with jobs.lock: jobs._save(jp,job)
+            jobs._directory_lock.close()
+            jobs=RegistrationQueue(folder,main,dual_verification=True,verification_operations=review)
+            self.assertTrue(review.entered.wait(5))
+            with jobs.lock:
+                current=jobs._current_item(jp,0); current.update(state='manual_required',detail='new authoritative state')
+                jobs._save_item(jp,jobs._load(jp),0,current)
+            review.release.set();jobs.verification.join()
+            self.assertEqual(jobs.states()['a']['state'],'manual_required')
+            self.assertEqual(json.loads(path.read_text())['status'],'interrupted');self.assertEqual(len(main.submitted),1);jobs.close()
 
 if __name__=='__main__': unittest.main()

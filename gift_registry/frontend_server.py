@@ -76,6 +76,14 @@ class LocalHTTPServer(ThreadingHTTPServer):
             if jobs is not None:
                 try:
                     jobs.pending.join()
+                    if jobs.dual_verification:
+                        jobs.verification.join()
+                    if maintenance is not None and maintenance.task_exports is not None:
+                        try:
+                            maintenance.task_exports.tick()
+                        except (OSError, ValueError) as exc:
+                            from .diagnostics import diagnose
+                            diagnose(jobs.directory, 'task_export', 'shutdown_reconcile', exc)
                     # 浏览器和登录配置仍在关闭期间，不能让新进程取得任务目录。
                     close_operations = getattr(jobs.operations, "close", None)
                     if callable(close_operations):
@@ -252,7 +260,7 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
             if path == "/api/config":
                 from . import __version__
                 gifts, group_config, generation = row_store.selection_policy.context()
-                self.send(200, {"app": "gift_registry", "frontend_version": 11, "version": __version__, "token": token, "gifts": gifts,
+                self.send(200, {"app": "gift_registry", "frontend_version": 12, "version": __version__, "token": token, "gifts": gifts,
                                 "catalog_version": generation,
                                 "gift_groups": group_config,
                                 "host_actions_available": self.is_local_access(),

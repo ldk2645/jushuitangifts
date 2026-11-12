@@ -1710,7 +1710,7 @@ async function refreshMaintenanceStatus() {
     const status = await api("/api/maintenance/status"), label = $("#maintenance-summary"); label.hidden = false;
     label.textContent = status.needs_attention
       ? `后台归档需要处理（${status.diagnostic?.error_type || '状态不可用'}）；到期只读复核独立调度。请在主机检查维护记录。`
-      : status.last_error || `北京时间每日 01:00 自动导出上一日日志，草稿保留。下次：${status.next_run?.slice(0, 10) || '待确认'} 01:00。日志目录：${status.export_directory}${status.last_export_day ? `；最近导出 ${status.last_export_day}` : ""}`;
+      : status.last_error || '各业务日的已知任务全部首次处理结束后自动导出，按任务接受时的北京时间归属。跨日不拆批，草稿保留；可在“导出任务日志”查看进度和修订版本。';
   } catch { /* 断连不影响正在编辑的草稿。 */ }
   finally { setTimeout(refreshMaintenanceStatus, 30000); }
 }
@@ -1903,11 +1903,17 @@ function showTaskLogDay() {
   const day = taskLogDays.find(d => d.business_day === $("#task-log-day").value);
   const batch = $("#task-log-batch"); batch.replaceChildren(new Option("该日期所有批次", ""));
   for (const item of day?.batches || []) batch.append(new Option(`${item.batch_id.slice(0, 16)}… (${item.done}/${item.input})`, item.batch_id));
+  updateTaskLogProgress();
+}
+function updateTaskLogProgress() {
+  const day = taskLogDays.find(d => d.business_day === $("#task-log-day").value);
+  const selected = day?.batches.find(b => b.batch_id === $("#task-log-batch").value) || day;
   const labels = {pending:"待导出",partial:"非最终版",final:"已导出最终版",needs_refresh:"待刷新",error:"导出失败"};
-  $("#task-log-progress").textContent = day ? `${day.batch_state === "open" ? "处理中" : "首次处理已结束"} · 完成 ${day.done}/${day.input} · 剩余 ${day.remaining} · ${labels[day.export_state]} · 版本 ${day.version}` : "没有可导出的任务";
+  $("#task-log-progress").textContent = selected ? `${selected.remaining ? "处理中" : "首次处理已结束"} · 完成 ${selected.done}/${selected.input} · 剩余 ${selected.remaining} · 日报${labels[day.export_state]} · 版本 ${day.version}` : "没有可导出的任务";
   $("#task-log-download").disabled = !day;
 }
 $("#task-log-day").addEventListener("change", showTaskLogDay);
+$("#task-log-batch").addEventListener("change", updateTaskLogProgress);
 $("#task-log-close").addEventListener("click", () => $("#task-log-dialog").close());
 $("#export-today").addEventListener("click", async () => {
   try {
@@ -1929,6 +1935,9 @@ $("#task-log-download").addEventListener("click", async () => {
     link.download = result.filename;
     document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000);
     toast(result.filename.includes("partial") ? "已下载 partial 非最终版；仍有订单未结束。" : "任务日志已下载，包含全部原始行和批次汇总。");
+    const selectedBatch = $("#task-log-batch").value;
+    taskLogDays = (await api("/api/registrations/task-logs")).days;
+    showTaskLogDay(); $("#task-log-batch").value = selectedBatch; updateTaskLogProgress();
   } catch (error) { toast(error.message, true); }
   finally { button.disabled = false; }
 });

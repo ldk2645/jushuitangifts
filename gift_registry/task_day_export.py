@@ -200,7 +200,8 @@ class TaskDayExports:
                 counts=[summarize(j) for j in jobs]; remaining=sum(c['remaining'] for c in counts)
                 if remaining and not partial:
                     manifest.update(export_state='needs_refresh' if manifest['version'] else 'pending',batch_state='open',
-                                    done=sum(c['done'] for c in counts),remaining=remaining)
+                                    done=sum(c['done'] for c in counts),remaining=remaining,
+                                    batches=[dict(batch_id=j['id'],batch_state='open' if c['remaining'] else 'finished',**c) for j,c in zip(jobs,counts)])
                     self.save(day,manifest); return None
                 source=digest([jobs,marks]); stamp=self.clock().astimezone(CHINA).isoformat()
                 if not batch_id and manifest.get('source_version')==source and manifest.get('export_state') in {'final','partial'}:
@@ -231,7 +232,8 @@ class TaskDayExports:
                                filename=name,history_file=str(history.relative_to(self.exports)))
                     manifest.update(entry,export_state='final' if final else 'partial',
                                     batch_state='finished' if final else 'open',done=sum(c['done'] for c in counts),
-                                    remaining=remaining,input=sum(c['input'] for c in counts),error=None)
+                                    remaining=remaining,input=sum(c['input'] for c in counts),error=None,
+                                    batches=[dict(batch_id=j['id'],batch_state='open' if c['remaining'] else 'finished',**c) for j,c in zip(jobs,counts)])
                     manifest['history'].append(entry)
                     self.save(day,manifest)
                 return destination

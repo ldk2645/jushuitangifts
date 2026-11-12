@@ -136,6 +136,38 @@ class TaskDayTests(unittest.TestCase):
         inventory=self.service.inventory(); self.assertEqual(inventory['days'],[])
         self.assertEqual(inventory['needs_manual_reconciliation'][0]['batch_id'],'unknown')
 
+    def test_explicit_next_day_retry_is_new_attempt_with_origin_lineage(self):
+        from test_host_management import RetryOperations
+        ops=RetryOperations(); self.jobs.operations=ops
+        r=row('retry'); ops.modes[r['order_no']]='query_error'
+        with patch('gift_registry.registration.now',return_value='2026-11-09T20:00:00+08:00'):
+            first=self.jobs.start([r],CATALOG);self.jobs.pending.join()
+        failure=self.jobs.retry_candidates()['failures'][0];ops.modes.clear()
+        with patch('gift_registry.registration.now',return_value='2026-11-10T04:00:00+08:00'):
+            second=self.jobs.retry_failed(failure['failure_id']);self.jobs.pending.join()
+        job=self.jobs._load(self.jobs.directory/(second['task_id']+'.json'))
+        self.assertEqual(job['business_day'],'2026-11-10');self.assertEqual(job['origin_batch_id'],first['task_id'])
+        self.assertEqual(job['parent_execution_id'],failure['failure_id'])
+        self.assertNotEqual(job['items'][0]['execution_id'],failure['failure_id'])
+        self.service.tick();inventory=self.service.inventory()
+        self.assertEqual({d['business_day']:d['input'] for d in inventory['days']},{'2026-11-09':1,'2026-11-10':1})
+
+    def test_delayed_actual_review_revises_original_day_and_keeps_manual_overlay(self):
+        from test_host_management import RetryOperations
+        from gift_registry.host_management import HostManagement
+        ops=RetryOperations();self.jobs.operations=ops
+        r=row('review');ops.modes[r['order_no']]='no_new';self.rows.write(0,[r])
+        with patch('gift_registry.registration.now',return_value='2026-11-09T20:00:00+08:00'):
+            self.jobs.start([r],CATALOG);self.jobs.pending.join()
+        manager=HostManagement(self.rows,self.jobs);manager.mark(['review'],'pending')
+        self.service.tick();old=self.service.read_manifest('2026-11-09');ops.modes.clear()
+        self.jobs.enqueue_due_reviews(datetime.fromisoformat('2026-11-10T04:00:00+08:00'));self.jobs.pending.join()
+        self.service.tick();new=self.service.read_manifest('2026-11-09')
+        self.assertEqual(new['version'],old['version']+1);self.assertEqual(self.jobs.states()['review']['state'],'success')
+        self.assertEqual(manager.states()['review']['manual_status'],'pending')
+        self.assertEqual(self.service.inventory()['days'][0]['business_day'],'2026-11-09')
+        self.assertEqual(len(cells((self.service.exports/new['filename']).read_bytes(),5))-1,1)
+
     def test_every_original_row_and_unknown_is_not_success(self):
         p=fixture(self.jobs,'mixed',7,'2026-11-09T20:00:00+08:00','2026-11-10T04:00:00+08:00')
         job=self.jobs._load(p)

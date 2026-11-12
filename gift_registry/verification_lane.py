@@ -30,7 +30,16 @@ class VerificationLane:
         self.active = {}  # Only unfinished initial tasks, bounded by LIMIT.
 
     def records(self):
-        return [(p, json.loads(p.read_text(encoding='utf-8'))) for p in sorted(self.directory.glob('*.json'))]
+        result=[]
+        for path in sorted(self.directory.glob('*.json')):
+            record=json.loads(path.read_text(encoding='utf-8'))
+            name=record.get('path')
+            if (not isinstance(name,str) or '/' in name or '\\' in name or not name.endswith('.json')
+                    or name in {'.json','..json'} or type(record.get('index')) is not int or record['index']<0
+                    or type(record.get('state_version')) is not int):
+                raise ValueError('核验交接记录结构不一致，保留原文件')
+            result.append((path,record))
+        return result
 
     def backlog(self):
         with self.condition:
@@ -158,8 +167,14 @@ class VerificationLane:
         from .registration import now, row_signature, task_key
         job_path, index = self.jobs.directory / record['path'], record['index']
         with self.jobs.lock:
-            job = self.jobs._load(job_path)
-            row, item = job['rows'][index], job['items'][index]
+            # Read just this overlay. Re-reading all 1000 overlays for each
+            # completion would make handoff quadratic and hold the shared lock.
+            base = self.jobs._snapshot_cache.get(job_path.name)
+            if base is None:
+                self.jobs._read_snapshot(job_path)
+                base = self.jobs._snapshot_cache[job_path.name]
+            job = dict(base[1], items=list(base[1]['items']))
+            row, item = job['rows'][index], self.jobs._current_item(job_path,index)
             identity = (item.get('execution_id'), row_signature(row), task_key(row), item.get('state_version', 0))
             expected = (record['execution_id'], record['row_signature'], record['task_key'], record['state_version'])
             if identity != expected or item['state'] != 'verification_pending':
@@ -192,7 +207,7 @@ class VerificationLane:
         with self.jobs.lock:
             current = self.jobs._current_item(job_path, index)
             if (current.get('execution_id') != record['execution_id'] or current.get('state_version') != expected_version
-                    or row_signature(self.jobs._load(job_path)['rows'][index]) != record['row_signature']):
+                    or row_signature(self.jobs._snapshot_cache[job_path.name][1]['rows'][index]) != record['row_signature']):
                 record.update(status='interrupted', detail='结果已过期，未覆盖当前状态')
             else:
                 stamp = now()
