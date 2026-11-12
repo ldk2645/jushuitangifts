@@ -77,9 +77,15 @@ class SubmittedFormRecoveryTests(unittest.TestCase):
                 reader.page._refresh_submitted_form.side_effect = lambda: (state.update(form=False) or True)
                 if existing:
                     execute = reader.driver.execute_script.side_effect
-                    reader.driver.execute_script.side_effect = lambda script: (
-                        {'pager': '共 1 条', 'rows': [{'task_id': '001', 'order_no': '00001', 'created_at': '2026-01-01 00:00:00'}]}
-                        if 'gift-banniu-list' in script else execute(script))
+                    def existing_task(script, *args):
+                        if 'gift-banniu-task-detail-cell' in script:
+                            self.assertEqual(args, ('001',))
+                            return Mock()  # Read-only task cell; detail remains incomplete below.
+                        if 'gift-banniu-list' in script:
+                            return {'pager': '共 1 条', 'rows': [
+                                {'task_id': '001', 'order_no': '00001', 'created_at': '2026-01-01 00:00:00'}]}
+                        return execute(script)
+                    reader.driver.execute_script.side_effect = existing_task
                 operations = SeleniumOperations(browsers=Mock())
                 operations._banniu = Mock(return_value=reader.page)
                 request = RegistrationRequest('00001', (SKU,), (NAME,))

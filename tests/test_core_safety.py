@@ -117,7 +117,7 @@ class CoreSafetyTests(unittest.TestCase):
                 ops = FakeOperations(); ops.configured = False
                 with RegistrationQueue(folder, operations=ops) as jobs:
                     jobs.start([row()], CATALOG)
-                path = next(Path(folder).glob('*.json')); data = json.loads(path.read_text())
+                path = next(Path(folder).glob('*.json')); data = json.loads(path.read_text(encoding='utf-8'))
                 data['items'][0].update(state=state, submit_attempted=state in ('submitting','verifying'),
                                         attempts=int(state in ('submitting','verifying')))
                 path.write_text(json.dumps(data))

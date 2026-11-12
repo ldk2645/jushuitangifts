@@ -90,9 +90,9 @@ class VerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             main=Main(); jobs=RegistrationQueue(folder,main,dual_verification=True,verification_operations=Review(main))
             jobs.start([row('a')],CATALOG); jobs.pending.join(); jobs.verification.join(); jobs.close()
-            p=next((Path(folder)/'verification_tasks').glob('*.json')); record=json.loads(p.read_text()); record['status']='running'; p.write_text(json.dumps(record))
+            p=next((Path(folder)/'verification_tasks').glob('*.json')); record=json.loads(p.read_text(encoding='utf-8')); record['status']='running'; p.write_text(json.dumps(record), encoding='utf-8')
             jobs=RegistrationQueue(folder,main,dual_verification=False)
-            self.assertEqual(json.loads(p.read_text())['status'],'done'); self.assertEqual(jobs.states()['a']['state'],'success'); jobs.close()
+            self.assertEqual(json.loads(p.read_text(encoding='utf-8'))['status'],'done'); self.assertEqual(jobs.states()['a']['state'],'success'); jobs.close()
 
     def test_serial_fallback(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -189,6 +189,6 @@ class VerificationTests(unittest.TestCase):
                 jobs._save_item(jp,jobs._load(jp),0,current)
             review.release.set();jobs.verification.join()
             self.assertEqual(jobs.states()['a']['state'],'manual_required')
-            self.assertEqual(json.loads(path.read_text())['status'],'interrupted');self.assertEqual(len(main.submitted),1);jobs.close()
+            self.assertEqual(json.loads(path.read_text(encoding='utf-8'))['status'],'interrupted');self.assertEqual(len(main.submitted),1);jobs.close()
 
 if __name__=='__main__': unittest.main()
