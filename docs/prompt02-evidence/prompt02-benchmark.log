@@ -1,0 +1,10 @@
+{"rows": 100, "dual": false, "seconds": 9.141372400001273, "errors": 0, "submissions": 100, "peak_python_bytes": 3404483, "max_platform_concurrency": 1, "thread_count": 1, "max_backlog": 0}
+{"rows": 100, "dual": true, "seconds": 10.568104599995422, "errors": 0, "submissions": 100, "peak_python_bytes": 3006930, "max_platform_concurrency": 2, "thread_count": 2, "max_backlog": 1}
+{"rows": 500, "dual": false, "seconds": 57.12811510000029, "errors": 0, "submissions": 500, "peak_python_bytes": 19387702, "max_platform_concurrency": 1, "thread_count": 1, "max_backlog": 0}
+{"rows": 500, "dual": true, "seconds": 56.552307100006146, "errors": 0, "submissions": 500, "peak_python_bytes": 16462496, "max_platform_concurrency": 2, "thread_count": 2, "max_backlog": 1}
+{"rows": 1000, "dual": false, "seconds": 147.49402910000936, "errors": 0, "submissions": 1000, "peak_python_bytes": 37187285, "max_platform_concurrency": 1, "thread_count": 1, "max_backlog": 0}
+{"rows": 1000, "dual": true, "seconds": 135.63864879999892, "errors": 0, "submissions": 1000, "peak_python_bytes": 29240881, "max_platform_concurrency": 2, "thread_count": 2, "max_backlog": 1}
+{"rows": 100, "seconds": 0.21989370000665076, "peak_python_bytes": 2684249, "lock_max_hold_seconds": 0.004787300000316463, "inventory_ms": 16.42310000897851, "xlsx_bytes": 20920}
+{"rows": 500, "seconds": 1.0130366999947, "peak_python_bytes": 12954606, "lock_max_hold_seconds": 0.00388550000207033, "inventory_ms": 26.06369998829905, "xlsx_bytes": 81294}
+{"rows": 1000, "seconds": 2.053352899994934, "peak_python_bytes": 25864655, "lock_max_hold_seconds": 0.004206300000078045, "inventory_ms": 25.09989999816753, "xlsx_bytes": 156361}
+{"rows": 2000, "seconds": 3.9358265999908326, "peak_python_bytes": 51722038, "lock_max_hold_seconds": 0.00438479999138508, "inventory_ms": 42.987900000298396, "xlsx_bytes": 307270}

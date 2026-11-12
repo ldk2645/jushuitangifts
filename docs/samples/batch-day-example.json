@@ -1,0 +1,11 @@
+{
+  "batch_id": "synthetic-1000-cross-midnight",
+  "business_day": "2026-11-09",
+  "created_at": "2026-11-09T20:00:00+08:00",
+  "completed_2026_11_09": 600,
+  "completed_2026_11_10": 400,
+  "input_rows": 1000,
+  "actual_submissions": 1000,
+  "final_at": "2026-11-10T04:00:00+08:00",
+  "source": "deterministic synthetic fixture; no real orders"
+}

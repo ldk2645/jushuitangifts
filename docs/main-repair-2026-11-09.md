@@ -82,6 +82,16 @@ python tools/benchmark_matrix.py --label after
 
 代码回滚：本次尚未部署，直接保留或放弃独立修复分支即可；原工作区和生产不受影响。若后续部署后回滚，应先停止受理并等待 worker 完成，离线备份整个数据目录，包括 item_updates、retired_item_updates、retry_batches、execution_history 和 auto_reviews，再用修复版只读核对/整理副本。不可只恢复旧任务主 JSON 而丢弃增量证据，不可在未知提交上创建新的重登身份。确认无未整理增量和待派发批次后，才评估将已对账数据交给旧版。禁止覆盖既有人工审计和成功记录。
 
+## Prompt 02 追加交付（2026-11-12）
+
+本轮从 `1734132` 继续于 `codex/main-verification-taskday-20261111`，独立只读核验、逐单人工覆盖和 V4 原始业务日导出均已编码。开关 `GIFT_DUAL_VERIFICATION` 默认关闭；开启后第二聚水潭 profile 与 worker 独占，先落盘交接，再异步核验。不同订单可继续提交，同订单结果不确定时仍拦截其他 SKU。
+
+人工状态移除全局队列空闲限制，改为本单终态、签名、execution_id 和 state_version 检查。前端带所见版本，混选或过期请求整体 409；审计不改变平台证据。延迟复核后原显示覆盖保持，需明确 reset。
+
+新任务在接受时固定 UTC+08:00 业务日。1000 行跨日仍按原始批次保留全部行，独立 manifest、完整 XLSX 校验、源版本比较及历史版本控制 final 发布；新日工作不阻塞旧日完成。旧完成日下载接口保留，新 UI 使用“导出任务日志”。维护游标与 V4 导出独立，timer 不清理草稿。
+
+详见 [任务业务日设计与回退](task-day-export-design.md) 和 [Prompt 02 验证结果](prompt02-verification-results.md)。真实平台、目标机器双会话和缺失的 14 条真实匹配夹具仍未现场验证；没有部署生产。
+
 ## 部署前人工检查
 
 - 获取缺失的真实 14 条回归夹具及生产离线故障证据，在隔离副本重新验收。

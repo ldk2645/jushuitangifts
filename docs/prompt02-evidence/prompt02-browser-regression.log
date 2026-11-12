@@ -1,0 +1,45 @@
+{
+  "browser": "157.0.8103.40",
+  "metrics": [
+    {
+      "dom_nodes": 1539,
+      "mounted_rows": 100,
+      "paste_ms": 22.80000000447035,
+      "rows": 100,
+      "valid": true
+    },
+    {
+      "dom_nodes": 2738,
+      "mounted_rows": 200,
+      "paste_ms": 28.899999998509884,
+      "rows": 500,
+      "valid": true
+    },
+    {
+      "dom_nodes": 2738,
+      "mounted_rows": 200,
+      "paste_ms": 30,
+      "rows": 1000,
+      "valid": true
+    },
+    {
+      "dom_nodes": 2738,
+      "mounted_rows": 200,
+      "paste_ms": 43.600000001490116,
+      "rows": 2000,
+      "valid": true
+    }
+  ]
+}
+PASS: three columns; old true draft blocked; hidden recipients absent; remote host controls denied.
+PASS: independent preferences, exact scope, same-name ambiguity, multi-membership, empty groups, refresh; existing selections unchanged.
+PASS: scoped picker keeps original codes; structured copy, formula input and expanding regional paste enforce scope.
+PASS: old clipboard true/false compatibility, privacy, formula/navigation status column C.
+PASS: catalog rename retains success; changed/deleted group pauses new matching without fallback or clearing existing selections.
+PASS: older poll cannot overwrite newer state; no browser-triggered business submission; screenshot saved.
+PASS: full SKU strings only; case, leading zeros, punctuation and typos never fuzzy-match; names/aliases still work.
+PASS: native fill-handle drag copies confirmed codes and preserves IDs/orders; one undo restores all targets.
+PASS: multi-row repeat, Ctrl+D, adjacent-column double-click fill; no status/address copying or numeric increments.
+PASS: Esc cancels; out-of-group and invalid scopes reject the whole fill; unresolved input remains unresolved.
+PASS: three-column keyboard wrapping, persisted selections and zero platform calls.
+PASS: current main frontend acceptance (large grids, two clients, native fill gestures).

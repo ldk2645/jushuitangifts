@@ -1,0 +1,6 @@
+test_delayed_claim_limit_does_not_overshoot_when_63_are_queued (test_verification_lane.VerificationTests.test_delayed_claim_limit_does_not_overshoot_when_63_are_queued) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 1.653s
+
+OK

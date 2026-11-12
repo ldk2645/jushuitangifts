@@ -1,0 +1,15 @@
+{
+  "original": {
+    "first_order": "0001000000000000000000",
+    "last_order": "0001000000000000000999",
+    "rows": 1000,
+    "boundary_600_400": "preserved"
+  },
+  "libreoffice_roundtrip": {
+    "first_order": "0001000000000000000000",
+    "last_order": "0001000000000000000999",
+    "rows": 1000,
+    "boundary_600_400": "preserved"
+  },
+  "native_pdf_order_text": "preserved"
+}
