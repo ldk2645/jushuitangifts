@@ -776,9 +776,9 @@ class RegistrationQueue(RetryBatches, JobStorage):
             if raw.get('recipient') is not None or request.recipient is not None:
                 return '原始基线不支持自动核验'
             before = OrderSnapshot(raw['order_no'], raw['found'], tuple(GiftRecord(**r) for r in raw['records']))
-            validate_snapshot(before, request.order_no)
             receipt = SubmissionReceipt(**evidence['receipt'])
             validate_receipt(receipt)
+            validate_snapshot(before, request.order_no, identity_only=bool(receipt.created_record_ids))
             if receipt.accepted is not True or not before.found:
                 return '缺少有效提交回执或原始订单，不执行自动核验'
         except (ValueError, TypeError, KeyError, PlatformOperationError):
@@ -818,7 +818,7 @@ class RegistrationQueue(RetryBatches, JobStorage):
             if not raw or raw.get("recipient") is not None or request.recipient is not None:
                 raise PlatformOperationError("缺少本次登记的完整原始基线，不能自动确认成功")
             before = OrderSnapshot(raw["order_no"], raw["found"], tuple(GiftRecord(**entry) for entry in raw["records"]))
-            validate_snapshot(before, request.order_no)
+            validate_snapshot(before, request.order_no, identity_only=identity_only)
             receipt = evidence.get("receipt")
             if receipt:
                 receipt = SubmissionReceipt(**receipt)
