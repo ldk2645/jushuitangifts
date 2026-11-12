@@ -714,12 +714,13 @@ class RegistrationQueue(RetryBatches, JobStorage):
         with self.lock:
             if self._closed or self._stopping or not self.configured:
                 return 0
-            if self.dual_verification and sum(json.loads(p.read_text(encoding='utf-8')).get('status') == 'queued'
-                    for p in (self.directory / 'auto_reviews').glob('*.json')) >= 64:
+            queued_reviews = (sum(json.loads(p.read_text(encoding='utf-8')).get('status') == 'queued'
+                    for p in (self.directory / 'auto_reviews').glob('*.json')) if self.dual_verification else 0)
+            if self.dual_verification and queued_reviews >= 64:
                 return 0
             scheduled = 0
             for record in self._latest_attempts():
-                if scheduled >= 16:
+                if scheduled >= 16 or self.dual_verification and queued_reviews + scheduled >= 64:
                     break
                 item = record["item"]
                 due = self._review_due_at(item)

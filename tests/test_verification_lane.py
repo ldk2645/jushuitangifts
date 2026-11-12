@@ -100,6 +100,23 @@ class VerificationTests(unittest.TestCase):
             jobs.start([row('a'),row('b')],CATALOG); jobs.pending.join()
             self.assertEqual([v['state'] for v in jobs.states().values()],['success','success']); jobs.close()
 
+    def test_delayed_claim_limit_does_not_overshoot_when_63_are_queued(self):
+        with tempfile.TemporaryDirectory() as folder:
+            main=Main();jobs=RegistrationQueue(folder,main,dual_verification=True,verification_operations=Review(main))
+            directory=jobs.directory/'auto_reviews';directory.mkdir()
+            for i in range(63):(directory/f'old-{i}.json').write_text(json.dumps(dict(execution_id=f'old-{i}',status='queued')))
+            r=row('limit');item=jobs._item(r);stamp=datetime.now().astimezone().isoformat()
+            item.update(state='failed',submission_status='submitted',review_due_at=stamp,review_delay_seconds=180,
+                        evidence=dict(before_snapshot=asdict(OrderSnapshot(r['order_no'],True)),submit_clicked=True,
+                                      receipt=asdict(SubmissionReceipt(True,'ref-'+r['order_no'],('record-'+r['order_no'],)))))
+            records=[dict(failure_id=f'new-{i}',row=r,item=item,catalog=CATALOG,created_at=stamp,completed_at=stamp) for i in range(4)]
+            with patch.object(jobs,'_latest_attempts',return_value=records),patch.object(jobs.verification,'wake'):
+                self.assertEqual(jobs.enqueue_due_reviews(datetime.now().astimezone()+timedelta(seconds=1)),1)
+                self.assertEqual(jobs.health()['review_claims']['queued'],64)
+            # No execution exists for these synthetic scheduling-only records;
+            # the worker marks them skipped without accessing either adapter.
+            jobs.verification.wake();jobs.verification.join();jobs.close()
+
     def test_thousand_rows_bounded_backpressure_and_fair_delayed_review(self):
         with tempfile.TemporaryDirectory() as folder:
             main=Main(); review=Review(main,block=True); order=[]; original=review.query_order
@@ -116,16 +133,19 @@ class VerificationTests(unittest.TestCase):
             jobs._save(jobs.directory/'seed.json',dict(id='seed',created_at=stamp,rows=[seed],items=[item],gift_catalog=CATALOG))
             with patch.object(jobs.verification,'wake'):
                 self.assertEqual(jobs.enqueue_due_reviews(datetime.now().astimezone()+timedelta(seconds=1)),1)
-            observed=[]; handoff=jobs.verification.handoff
+            observed=[]; handoff=jobs.verification.handoff; capacity_reached=threading.Event()
             def measured(*args):
                 handoff(*args); observed.append(jobs.verification.backlog())
+                if jobs.verification.backlog()==4: capacity_reached.set()
             jobs.verification.handoff=measured
             try:
                 jobs.start([row(i) for i in range(1000)],CATALOG)
                 self.assertTrue(review.entered.wait(5))
+                self.assertTrue(capacity_reached.wait(5))
                 # The primary can accept only LIMIT outstanding handoffs while
                 # the verifier is held; it cannot build an unbounded queue.
-                self.assertLessEqual(jobs.verification.backlog(),4)
+                self.assertEqual(jobs.verification.backlog(),4)
+                self.assertEqual(len(main.submitted),4)
                 review.release.set(); jobs.pending.join(); jobs.verification.join()
                 self.assertLessEqual(max(observed),4); self.assertEqual(len(main.submitted),1000)
                 self.assertLessEqual(order.index(seed['order_no']),3)
@@ -134,6 +154,22 @@ class VerificationTests(unittest.TestCase):
                 self.assertTrue(all(states[str(i)]['state']=='success' for i in range(1000)))
             finally:
                 review.release.set(); jobs.pending.join(); jobs.verification.join(); jobs.close()
+
+    def test_corrupt_delayed_claim_stops_without_hanging_or_changing_evidence(self):
+        with tempfile.TemporaryDirectory() as folder:
+            main=Main(); jobs=RegistrationQueue(folder,main,dual_verification=True,verification_operations=Review(main))
+            path=jobs.directory/'auto_reviews'/'damaged.json'; path.parent.mkdir()
+            original=b'{incomplete'; path.write_bytes(original)
+            try:
+                jobs.verification.wake(); jobs.verification.thread.join(5)
+                self.assertFalse(jobs.verification.thread.is_alive())
+                with self.assertRaises(RuntimeError): jobs.verification.join()
+                self.assertEqual(path.read_bytes(),original)
+                self.assertEqual(main.submitted,[])
+            finally:
+                # Failed shutdown intentionally retains the production lock;
+                # this isolated corruption fixture has no running worker.
+                jobs._directory_lock.close()
 
     def test_handoff_before_item_write_crash_repaired_and_stale_completion_rejected(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -1,6 +1,7 @@
 """Fake lanes and XLSX only: no real platform/session access."""
 import json
 import platform
+import subprocess
 import sys
 import tempfile
 import threading
@@ -77,6 +78,7 @@ def lane_bench(size,dual):
                         poll_ms=poll,metrics=jobs.health())
         finally:
             stop.set(); thread.join(35); tracemalloc.stop(); server.shutdown(); server.server_close()
+            jobs.close()
         return result
 
 def export_bench(size):
@@ -89,17 +91,15 @@ def export_bench(size):
         peak=tracemalloc.get_traced_memory()[1]; tracemalloc.stop(); started=time.perf_counter(); service.inventory(); api=time.perf_counter()-started
         result=dict(rows=size,seconds=elapsed,peak_python_bytes=peak,lock_max_hold_seconds=jobs.lock.max_hold_seconds,
                     inventory_ms=api*1000,xlsx_bytes=file.stat().st_size)
-        if size==1000:
-            destination=ROOT/'docs'/'samples'/'gift-registration-2026-11-09.xlsx'; destination.parent.mkdir(parents=True,exist_ok=True)
-            destination.write_bytes(file.read_bytes())
-            (destination.parent/'batch-day-example.json').write_text(json.dumps(dict(batch_id='synthetic-batch',business_day='2026-11-09',
-                created_at='2026-11-09T20:00:00+08:00',completed_at='2026-11-10T04:00:00+08:00',input_rows=1000,
-                actual_submissions=1000,source='synthetic deterministic fixture; no real orders'),indent=2),encoding='utf-8')
+        # Deliverable samples are created by generate_prompt02_sample.py;
+        # benchmark reruns must not overwrite the reviewed 600/400 workbook.
         jobs.close(); return result
 
 def main():
     output=ROOT/'docs'/'benchmark-prompt02.json'
-    report=dict(environment=platform.platform(),python=sys.version,simulated_query_ms=2,simulated_submit_ms=2,
+    report=dict(environment=platform.platform(),python=sys.version,
+                source_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
+                simulated_query_ms=2,simulated_submit_ms=2,
                 simulated_verify_wait_ms=8,lanes=[],exports=[])
     def save():output.write_text(json.dumps(report,indent=2),encoding='utf-8')
     for size in (100,500,1000):

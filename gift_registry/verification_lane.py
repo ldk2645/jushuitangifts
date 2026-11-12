@@ -34,7 +34,7 @@ class VerificationLane:
         for path in sorted(self.directory.glob('*.json')):
             record=json.loads(path.read_text(encoding='utf-8'))
             name=record.get('path')
-            if (not isinstance(name,str) or '/' in name or '\\' in name or not name.endswith('.json')
+            if (not isinstance(name,str) or '/' in name or '\\' in name or ':' in name or not name.endswith('.json')
                     or name in {'.json','..json'} or type(record.get('index')) is not int or record['index']<0
                     or type(record.get('state_version')) is not int):
                 raise ValueError('核验交接记录结构不一致，保留原文件')
@@ -111,30 +111,37 @@ class VerificationLane:
                 self.thread.start()
             self.condition.notify_all()
 
-    def choose(self):
+    def choose(self, *, advance=True):
+        # Caller holds jobs.lock then condition. Claim readers must share the
+        # writer's lock: Windows can deny reads during an atomic replacement.
         initial = next(((p,r) for p,r in sorted(self.active.items(), key=lambda pair:pair[1]['created_at'])
                         if r['status']=='ready'),None)
         delayed = next((p for p in sorted((self.jobs.directory / 'auto_reviews').glob('*.json'))
                         if json.loads(p.read_text(encoding='utf-8')).get('status') == 'queued'), None)
         if delayed and (not initial or self.burst >= 3):
-            self.burst = 0
+            if advance:
+                self.burst = 0
             return 'delayed', delayed
         if initial:
-            self.burst += 1
+            if advance:
+                self.burst += 1
             return 'initial', initial
         return None
 
     def run(self):
         try:
             while True:
-                with self.condition:
-                    work = self.choose()
-                    if work is None:
-                        if self.stopping:
+                with self.jobs.lock:
+                    with self.condition:
+                        work = self.choose()
+                        if work is not None:
+                            self.busy = True
+                        elif self.stopping:
                             return
+                if work is None:
+                    with self.condition:
                         self.condition.wait(.2)
-                        continue
-                    self.busy = True
+                    continue
                 started = time.monotonic()
                 try:
                     if work[0] == 'initial':
@@ -154,6 +161,14 @@ class VerificationLane:
                     with self.condition:
                         self.busy = False
                         self.condition.notify_all()
+        except Exception as exc:
+            # Selection itself can fail on damaged or inaccessible claims.
+            # Wake joiners with an explicit failure instead of hanging on a
+            # dead worker; keep the original records for manual reconciliation.
+            self.close_error = type(exc).__name__
+            diagnose(self.jobs.directory, 'verification', 'select', exc)
+            with self.condition:
+                self.condition.notify_all()
         finally:
             close = getattr(self.operations, 'close', None)
             if callable(close):
@@ -224,11 +239,13 @@ class VerificationLane:
 
     def join(self):
         while True:
+            with self.jobs.lock:
+                with self.condition:
+                    if self.close_error:
+                        raise RuntimeError('核验通道已停止，请保留记录并重新启动核对')
+                    if not self.busy and self.choose(advance=False) is None:
+                        return
             with self.condition:
-                if self.close_error:
-                    raise RuntimeError('核验通道已停止，请保留记录并重新启动核对')
-                if self.choose() is None and not self.busy:
-                    return
                 self.condition.wait(.1)
 
     def close(self):

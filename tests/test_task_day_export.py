@@ -54,6 +54,8 @@ class TaskDayTests(unittest.TestCase):
         self.assertFalse((self.service.exports/'gift-registration-2026-11-09.xlsx').exists())
         partial=self.service.publish('2026-11-09',partial=True)
         self.assertIn('partial',partial.name); self.assertEqual(len(cells(partial.read_bytes()))-1,1000)
+        self.service.tick()
+        self.assertEqual(self.service.inventory()['days'][0]['export_state'],'partial')
         fixture(self.jobs,'new-day-still-running',4,'2026-11-10T03:00:00+08:00','2026-11-10T03:01:00+08:00',1)
         self.clock=datetime.fromisoformat('2026-11-10T04:00:00+08:00')
         with self.jobs.lock:
@@ -116,6 +118,7 @@ class TaskDayTests(unittest.TestCase):
         with patch('gift_registry.task_day_export.atomic_write',side_effect=locked):
             with self.assertRaises(PermissionError): self.service.publish('2026-11-09')
         self.assertEqual(file.read_bytes(),original); self.assertEqual(self.service.read_manifest('2026-11-09')['export_state'],'error')
+        self.assertEqual(self.service.inventory()['days'][0]['export_state'],'error')
         original_builder=build_report
         def racing(*args):
             payload=original_builder(*args)

@@ -155,7 +155,7 @@ class TaskDayExports:
         raise SourceChanged('任务仍在更新，请稍后导出')
 
     def manifest_path(self, day):
-        if not re.fullmatch(r'\d{4}-\d{2}-\d{2}',day): raise ValueError('业务日期格式不正确')
+        if not isinstance(day,str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}',day): raise ValueError('业务日期格式不正确')
         datetime.strptime(day,'%Y-%m-%d')
         return self.manifests/(day+'.json')
 
@@ -181,7 +181,7 @@ class TaskDayExports:
         for day,batches in sorted(days.items(),reverse=True):
             manifest=self.read_manifest(day); source=digest([batches,marks]); counts=[summarize(j) for j in batches]
             state=manifest['export_state']
-            if manifest.get('source_version')!=source:
+            if state != 'error' and manifest.get('source_version')!=source:
                 state='needs_refresh' if manifest.get('version') else 'pending'
             result.append(dict(business_day=day,export_state=state,version=manifest['version'],
                                batch_state='open' if any(c['remaining'] for c in counts) else 'finished',
@@ -198,12 +198,17 @@ class TaskDayExports:
                 jobs=[j for j in all_jobs if job_day(j)==day and (not batch_id or j['id']==batch_id)]
                 if not jobs: raise ValueError('该业务日或批次没有可核对任务')
                 counts=[summarize(j) for j in jobs]; remaining=sum(c['remaining'] for c in counts)
+                source=digest([jobs,marks])
                 if remaining and not partial:
-                    manifest.update(export_state='needs_refresh' if manifest['version'] else 'pending',batch_state='open',
+                    if batch_id: return None
+                    if manifest.get('source_version')==source and manifest.get('export_state')=='partial':
+                        return None  # Timer must not invalidate an unchanged downloadable partial.
+                    manifest.update(export_state=('error' if manifest.get('export_state')=='error' else
+                                                  'needs_refresh' if manifest['version'] else 'pending'),batch_state='open',
                                     done=sum(c['done'] for c in counts),remaining=remaining,
                                     batches=[dict(batch_id=j['id'],batch_state='open' if c['remaining'] else 'finished',**c) for j,c in zip(jobs,counts)])
                     self.save(day,manifest); return None
-                source=digest([jobs,marks]); stamp=self.clock().astimezone(CHINA).isoformat()
+                stamp=self.clock().astimezone(CHINA).isoformat()
                 if not batch_id and manifest.get('source_version')==source and manifest.get('export_state') in {'final','partial'}:
                     file=self.exports/manifest['filename']
                     if file.exists() and hashlib.sha256(file.read_bytes()).hexdigest()==manifest.get('sha256'):
