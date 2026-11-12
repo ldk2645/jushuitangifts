@@ -277,13 +277,16 @@ class BanniuPageTests(unittest.TestCase):
             page, button, reader = self.submission_page()
             if failing:
                 button.click.side_effect = ElementClickInterceptedException("test")
-            observed = Mock(side_effect=lambda: self.assertEqual(button.click.call_count, 1))
+            observed = Mock(side_effect=lambda context: self.assertEqual(button.click.call_count, 1))
             with patch("gift_registry.banniu_receipt.BanniuReceiptReader", return_value=reader):
                 try:
                     page.submit(RegistrationRequest("0009", (SKU,), (NAME,)), OrderSnapshot("0009", True), on_submitted=observed)
                 except PlatformOperationError:
                     self.assertTrue(failing)
             self.assertEqual(observed.call_count, 0 if failing else 1)
+            if not failing:
+                self.assertEqual(observed.call_args.args[0]['banniu_before_task_ids'],
+                                 sorted(row['task_id'] for row in reader.query_tasks.return_value))
 
     def test_click_exception_dialog_timeout_and_receipt_timeout_never_retry(self):
         request = RegistrationRequest("0009", (SKU,), (NAME,))

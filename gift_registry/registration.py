@@ -10,6 +10,8 @@ from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from .receipt_recovery import recovery_context
+
 from .config import ROOT
 from .platform_operations import SeleniumOperations
 from .sessions import atomic_write
@@ -776,10 +778,18 @@ class RegistrationQueue(RetryBatches, JobStorage):
             if raw.get('recipient') is not None or request.recipient is not None:
                 return '原始基线不支持自动核验'
             before = OrderSnapshot(raw['order_no'], raw['found'], tuple(GiftRecord(**r) for r in raw['records']))
-            receipt = SubmissionReceipt(**evidence['receipt'])
-            validate_receipt(receipt)
-            validate_snapshot(before, request.order_no, identity_only=bool(receipt.created_record_ids))
-            if receipt.accepted is not True or not before.found:
+            receipt_data = evidence.get('receipt')
+            if receipt_data:
+                receipt = SubmissionReceipt(**receipt_data)
+                validate_receipt(receipt)
+                identity_only = bool(receipt.created_record_ids)
+                if receipt.accepted is not True:
+                    return '缺少有效提交回执，不执行自动核验'
+            else:
+                recovery_context(item)
+                identity_only = True
+            validate_snapshot(before, request.order_no, identity_only=identity_only)
+            if not before.found:
                 return '缺少有效提交回执或原始订单，不执行自动核验'
         except (ValueError, TypeError, KeyError, PlatformOperationError):
             return '缺少有效回执或关联证据，保留待人工核查，禁止重提'
@@ -804,30 +814,31 @@ class RegistrationQueue(RetryBatches, JobStorage):
             if self.dual_verification:
                 self.verification.active_order = record['row']['order_no'].strip()
             atomic_write(path, json.dumps(review, ensure_ascii=False).encode("utf-8"))
-        identifiers, success = [], False
+        identifiers, success, recovered = [], False, {}
         try:
             request = request_from_row(record["row"], record["catalog"])
             evidence = record["item"].get("evidence", {})
-            receipt_data = evidence.get("receipt") or {}
-            identity_only = bool(receipt_data.get("created_record_ids"))
             verifier = operations or self.operations
-            query = getattr(verifier, "query_verification_order", None) if identity_only else None
-            after = (query if callable(query) else verifier.query_order)(request.order_no)
-            validate_snapshot(after, request.order_no, identity_only=identity_only)
             raw = evidence.get("before_snapshot")
             if not raw or raw.get("recipient") is not None or request.recipient is not None:
                 raise PlatformOperationError("缺少本次登记的完整原始基线，不能自动确认成功")
             before = OrderSnapshot(raw["order_no"], raw["found"], tuple(GiftRecord(**entry) for entry in raw["records"]))
+            receipt_data = evidence.get('receipt')
+            if not receipt_data:
+                context = recovery_context(record['item'])
+                validate_snapshot(before, request.order_no, identity_only=True)
+                recover = getattr(verifier, 'recover_receipt', None)
+                if not callable(recover):
+                    raise PlatformOperationError('缺少有效回执且当前核验适配器不支持补读；禁止重提')
+                recovered = recover(request, before, context)
+                receipt_data = recovered['receipt']
+            receipt = SubmissionReceipt(**receipt_data)
+            validate_receipt(receipt)
+            identity_only = bool(receipt.created_record_ids)
             validate_snapshot(before, request.order_no, identity_only=identity_only)
-            receipt = evidence.get("receipt")
-            if receipt:
-                receipt = SubmissionReceipt(**receipt)
-                validate_receipt(receipt)
-                success, detail, identifiers = verify_new_records(request, before, after, receipt)
-            elif evidence.get("submit_clicked") is True:
-                raise PlatformOperationError("缺少有效回执，新增记录无法唯一关联本次任务；保留待人工核查，禁止重提")
-            else:
-                raise PlatformOperationError("缺少本次提交依据或此前明确未提交，不能自动确认成功")
+            query = getattr(verifier, 'query_verification_order', None) if identity_only else None
+            after = (query if callable(query) else verifier.query_order)(request.order_no)
+            success, detail, identifiers = verify_new_records(request, before, after, receipt)
         except Exception as exc:
             detail = str(exc) if isinstance(exc, PlatformOperationError) else f"自动复核未完成（{type(exc).__name__}）"
         with self.lock:
@@ -846,6 +857,9 @@ class RegistrationQueue(RetryBatches, JobStorage):
                         continue
                     item.setdefault("display_updated_at", item.get("updated_at", job["created_at"]))
                     item["review_result"] = {"at": now(), "success": success, "detail": detail}
+                    if recovered:
+                        item.setdefault('evidence', {}).update(recovered)
+                        item['submission_status'] = 'submitted'
                     if success:
                         item.update(state="success", detail="自动复核成功：" + detail, updated_at=now(),
                                     review_original_completed_at=record["completed_at"])
@@ -1098,7 +1112,8 @@ class RegistrationQueue(RetryBatches, JobStorage):
                     target.setdefault("execution_id", uuid.uuid4().hex)
                     evidence = updates.pop("evidence", None)
                     if (self.dual_verification and state == 'failed'
-                            and updates.get('submission_status', target.get('submission_status')) == 'uncertain'):
+                            and updates.get('submission_status', target.get('submission_status')) == 'uncertain'
+                            and target.get('evidence', {}).get('submit_clicked') is not True):
                         state = 'manual_required'
                     target.update(state=state, updated_at=now(), **updates)
                     if state == 'querying':

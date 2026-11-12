@@ -70,6 +70,10 @@ class SeleniumOperations:
         """复核只读取订单身份，不依赖折叠或延迟加载的商品明细。"""
         return self._jushuitan().query_order(order_no, identity_only=True)
 
+    def recover_receipt(self, request, before, context):
+        from .banniu_receipt import BanniuReceiptReader
+        return BanniuReceiptReader(self._banniu()).recover_receipt(request, before, context)
+
     def prepare_registration(self, request, before):
         """开发核对用：填写后停在提交前，绝不创建远端任务。"""
         self._validate_baseline(request, before)
