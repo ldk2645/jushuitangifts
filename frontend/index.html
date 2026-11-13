@@ -55,7 +55,7 @@
           <div id="overview-content" class="overview-content">
             <section class="page-heading" aria-labelledby="page-title">
               <div><div class="eyebrow">GIFT REGISTRATION</div><h1 id="page-title">礼赠登记表</h1><p>录入订单并选择礼品。本版本仅支持原地址礼赠。</p></div>
-              <div class="heading-right"><div class="overview-metrics" aria-label="登记概况"><div><span>待登记</span><strong id="metric-ready">0</strong></div><div class="metric-success"><span>成功</span><strong id="metric-success">0</strong></div><div class="metric-failed"><span>失败</span><strong id="metric-failed">0</strong></div></div><div id="save-indicator" class="save-indicator" role="status"><span class="save-dot"></span><span id="save-label">正在载入…</span></div></div>
+              <div class="heading-right"><div class="overview-metrics" aria-label="登记概况"><div><span>待登记</span><strong id="metric-ready">0</strong></div><div class="metric-success"><span>成功</span><strong id="metric-success">0</strong></div><div class="metric-failed"><span>失败</span><strong id="metric-failed">0</strong></div><div class="metric-pending-review"><span>待人工核查</span><strong id="metric-pending-review">0</strong></div></div><div id="save-indicator" class="save-indicator" role="status"><span class="save-dot"></span><span id="save-label">正在载入…</span></div></div>
             </section>
             <div class="workflow-overview" aria-label="登记流程"><div><span class="step-number">01</span><span>聚水潭查询</span></div><span class="step-arrow">›</span><div><span class="step-number">02</span><span>班牛登记</span></div><span class="step-arrow">›</span><div><span class="step-number">03</span><span>聚水潭复查</span></div><span class="step-arrow">›</span><div><span class="step-number">04</span><span>返回结果</span></div><span class="retry-policy">失败不自动重试</span></div>
             <div id="host-actions" class="host-actions" hidden>
@@ -78,7 +78,7 @@
     <footer class="workspace-footer"><div class="sheet-tab"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 3h14v14H3zM3 8h14M8 3v14"/></svg>礼赠登记</div><div class="sheet-summary"><span id="row-summary">共 0 行</span><span class="summary-divider"></span><span id="ready-summary">待登记 0 条</span><span id="selection-summary" class="selection-summary">未选中单元格</span></div></footer>
   </main>
   <div id="toast" class="toast" role="status" hidden></div>
-  <section id="gift-picker" class="gift-picker" role="dialog" aria-label="选择礼品（可多选）" hidden><div class="picker-heading"><strong>选择礼品</strong><span>可多选</span><button id="gift-close" type="button" aria-label="关闭礼品选项">×</button></div><div class="gift-group-controls"><label for="gift-group-filter">分组</label><select id="gift-group-filter" aria-label="礼品分组"></select><button id="picker-manage-groups" type="button" hidden>管理</button></div><input id="gift-search" type="search" placeholder="搜索名称、编码或别名" autocomplete="off" aria-label="搜索礼品"><p id="gift-sort-hint" class="gift-sort-hint"></p><div id="gift-unmatched" class="gift-unmatched" hidden></div><div id="gift-options" class="gift-options"></div><div class="picker-footer"><span id="gift-count">已选 0 项</span><button id="gift-add-option" type="button">＋ 新增礼赠</button><button id="gift-clear" type="button">清空</button><button id="gift-done" type="button">完成</button></div></section>
+  <section id="gift-picker" class="gift-picker" role="dialog" aria-label="选择礼品（可多选）" hidden><div class="picker-heading"><strong>选择礼品</strong><span>可多选</span><button id="gift-close" type="button" aria-label="关闭礼品选项">×</button></div><div class="gift-group-controls"><label for="gift-group-filter">分组</label><select id="gift-group-filter" aria-label="礼品分组"></select><button id="picker-manage-groups" type="button" hidden>管理</button></div><input id="gift-search" type="search" placeholder="搜索名称、数字或编码片段" autocomplete="off" aria-label="搜索礼品"><p id="gift-sort-hint" class="gift-sort-hint"></p><div id="gift-unmatched" class="gift-unmatched" hidden></div><div id="gift-options" class="gift-options"></div><div class="picker-footer"><span id="gift-count">已选 0 项</span><button id="gift-add-option" type="button">＋ 新增礼赠</button><button id="gift-clear" type="button">清空</button><button id="gift-done" type="button">完成</button></div></section>
   <dialog id="groups-dialog" class="groups-dialog" aria-labelledby="groups-title">
     <div class="retry-heading"><h2 id="groups-title">礼品分组管理</h2><button id="groups-close" class="button" type="button">关闭</button></div>
     <p>同一礼品可属于多个分组，默认加入新分组并保留已有归属。“设置为所选分组”会替换原归属，选空可恢复为未分组。</p>
@@ -92,7 +92,7 @@
   </dialog>
   <dialog id="retry-dialog" class="retry-dialog" aria-labelledby="retry-title">
     <div class="retry-heading"><h2 id="retry-title">重新登记失败订单</h2><button id="retry-close" class="button" type="button">关闭</button></div>
-    <p class="retry-intro">仅处理当前已保存表格中的失败订单（含筛选隐藏行及取消排队的重登任务）。人工成功和人工待核查已排除，历史记录保留。</p>
+    <p class="retry-intro">仅展示当前已保存表格中的失败和待人工核查订单（含筛选隐藏行及取消排队的重登任务）。人工成功和人工待核查已排除，历史记录保留。</p>
     <div id="retry-summary" class="retry-summary" aria-live="polite"></div>
     <p class="retry-safety">先核查，再登记。已提交或结果不确定的订单仅供人工核查，不会再次提交。</p>
     <button id="retry-all" class="button primary" type="button" disabled>一键核查并重登当前可重登订单</button>
