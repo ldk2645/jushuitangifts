@@ -46,9 +46,9 @@ class HostManagement:
                 result[key] = mark
         return result
 
-    def states(self):
+    def states(self, identifiers=None):
         with self.rows.lock, self.jobs.lock:
-            states = self.jobs.states()
+            states = self.jobs.states(identifiers)
             marks = self._read()["marks"]
             tasks = self._task_marks(states)
             blocked = self._blocked_executions()

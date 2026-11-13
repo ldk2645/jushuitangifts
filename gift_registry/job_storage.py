@@ -13,6 +13,15 @@ from .sessions import atomic_write
 
 
 class JobStorage:
+    def _job_stamp(self, path):
+        stat = path.stat()
+        updates = []
+        for overlay in sorted(self._overlay_dir(path).glob('*.json')):
+            info = overlay.stat()
+            updates.append((overlay.name, info.st_mtime_ns, info.st_size, info.st_ctime_ns))
+        return (stat.st_mtime_ns, stat.st_size, stat.st_ctime_ns,
+                self._storage_epochs.get(path.name, 0), tuple(updates))
+
     def _overlay_dir(self, path):
         return self.directory / 'item_updates' / path.stem
 
@@ -131,15 +140,30 @@ class JobStorage:
             atomic_write(path, json.dumps(record, ensure_ascii=False).encode())
 
     def _refresh_result_index(self):
-        self._result_index = {}; self._unknown_index = {}
-        for path in self._paths():
-            job = self._load(path)
+        paths = self._paths()
+        stamps = {path.name: self._job_stamp(path) for path in paths}
+        changed = {name for name in self._index_stamps if self._index_stamps[name] != stamps.get(name)}
+        if changed:
+            for index in (self._result_index, self._unknown_index):
+                for key, entries in list(index.items()):
+                    for identity in list(entries):
+                        if identity[0] in changed:
+                            del entries[identity]
+                    if not entries:
+                        del index[key]
+        for path in paths:
+            if self._index_stamps.get(path.name) == stamps[path.name]:
+                continue
+            cached = self._state_sources.get(path.name)
+            job = cached[1] if cached is not None and cached[0] == stamps[path.name] else self._load(path)
             for index in range(len(job['items'])):
                 self._index_item(path, job, index)
+        self._index_stamps = stamps
         self._index_ready = True
 
     def _index_item(self, path, job, index):
         from .registration import task_key
+        self._index_stamps.setdefault(path.name, None)
         row, item = job['rows'][index], job['items'][index]
         entry = (path.name, row, deepcopy(item), job['created_at'])
         identity = (path.name, item['row_id'])

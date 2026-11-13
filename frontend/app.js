@@ -1576,7 +1576,11 @@ $("#start-registration").addEventListener("click", async () => {
     rowStates = result.row_states; render();
     toast(result.workflow_configured ? `${result.reused ? "已有相同任务，沿用执行结果" : "登记任务已开始"}，共 ${result.count} 条。失败不会自动重试。`
       : `${result.reused ? "已有相同任务" : "已保存登记任务"}，共 ${result.count} 条。具体平台操作待接入。`);
-  } catch (error) { toast(error.message, true); }
+  } catch (error) {
+    toast(error.message, true);
+    starting = false;
+    await refreshExecutionStates(false); // Read back an uncertain outcome; never replay POST.
+  }
   finally { starting = false; button.disabled = false; }
 });
 document.addEventListener("keydown", event => {
@@ -1595,7 +1599,7 @@ document.addEventListener("keydown", event => {
 });
 document.addEventListener("visibilitychange", () => { if (document.hidden && initialized) saveNow(); });
 window.addEventListener("beforeunload", event => { if (version !== savedVersion || formulaHasChanges()) { event.preventDefault(); event.returnValue = ""; } });
-async function refreshExecutionStates() {
+async function refreshExecutionStates(reschedule = true) {
   const epoch = stateEpoch, sequence = ++pollSequence;
   try {
     if (initialized) {
@@ -1636,7 +1640,7 @@ async function refreshExecutionStates() {
     // 保留最后已知结果；恢复连接只读状态，永不发起登记请求。
     if (epoch === stateEpoch && sequence === pollSequence) document.getElementById("connection-notice").hidden = false;
   }
-  finally { setTimeout(refreshExecutionStates, document.hidden ? 5000 : 1500); }
+  finally { if (reschedule) setTimeout(refreshExecutionStates, document.hidden ? 5000 : 1500); }
 }
 
 let retrySubmitting = false;
