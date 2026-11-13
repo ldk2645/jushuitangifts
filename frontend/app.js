@@ -35,12 +35,14 @@ function ensureGiftScope(ids) {
 }
 function acceptCatalogContext(result) {
   const groups = result.gift_groups || giftGroups;
-  if (catalogVersion && (catalogVersion !== result.catalog_version || giftGroups.revision !== groups.revision)) scopeInvalid = true;
+  if (catalogVersion && (catalogVersion !== result.catalog_version || giftGroups.revision !== groups.revision)) {
+    scopeInvalid = true; pickerGiftUsage = null;
+  }
   catalogVersion = result.catalog_version || catalogVersion;
   giftGroups = groups; giftMatcher = null; renderGroupFilter();
 }
 let hostActionsAvailable = false, groupSelection = new Set(), groupsSaving = false;
-const statusOptions = { "": "全部状态", ready: "待登记", processing: "进行中", success: "成功", failed: "失败", cancelled: "已取消", manual_success: "人工标记成功", manual_failed: "人工标记失败", manual_pending: "人工待核查", skipped: "已跳过", incomplete: "待完善", empty: "空白", queued: "待接入" };
+const statusOptions = { "": "全部状态", ready: "待登记", processing: "进行中", success: "成功", failed: "失败", pending_review: "待人工核查", cancelled: "已取消", manual_success: "人工标记成功", manual_failed: "人工标记失败", manual_pending: "人工待核查", skipped: "已跳过", incomplete: "待完善", empty: "空白", queued: "待接入" };
 function gridRows() { return displayedRows; }
 const recentGiftOrderLimit = 100;
 let pickerGiftUsage = null;
@@ -204,6 +206,18 @@ function giftScore(text, gift) {
   if (!value) return 0;
   return Math.max(...[gift.name, ...(gift.aliases || [])].map(label => giftLabelScore(value, normalizeGift(label))));
 }
+function giftSearchScore(text, gift) {
+  const input = text.trim(), value = normalizeGift(input);
+  if (!input) return 1;
+  if (giftCatalog.some(item => item.id === input)) return gift.id === input ? 1 : 0;
+  // 搜索仅展示候选，必须勾选确认；粘贴/公式栏仍用完整编码精确匹配。
+  const codeScore = gift.id.includes(input) ? .95 : 0;
+  if (isGiftCodeInput(input)) {
+    const labelMatch = value && [gift.name, ...(gift.aliases || [])].some(label => normalizeGift(label).includes(value));
+    return Math.max(codeScore, labelMatch ? .9 : 0);
+  }
+  return Math.max(codeScore, giftScore(input, gift));
+}
 let giftMatcher = null;
 function matchingContext() {
   const scopeKey = JSON.stringify([selectedGiftGroup, giftGroups.revision, catalogVersion, scopeInvalid]);
@@ -339,7 +353,9 @@ function status(row) {
   if (complete && rowStates[row.id]?.signature === rowSignature(row)) {
     const state = rowStates[row.id];
     const labels = { waiting_for_workflow: ["待接入流程", "queued"], queued: ["等待执行", "processing"], querying: ["查询订单", "processing"],
-      submitting: ["正在登记", "processing"], verification_pending: ["等待独立核验", "processing"], manual_required: ["需人工核查", "failed"], verifying: ["复查确认", "processing"], success: ["成功", "success"], failed: ["失败", "failed"], skipped: ["已跳过", "skipped"], cancelled: ["已取消", "cancelled"] };
+      submitting: ["正在登记", "processing"], verification_pending: ["等待独立核验", "processing"], manual_required: ["待人工核查", "pending_review"], verifying: ["复查确认", "processing"], success: ["成功", "success"],
+      failed: state.submitted_to_banniu === true ? ["待人工核查", "pending_review"] : ["失败", "failed"],
+      skipped: ["已跳过", "skipped"], cancelled: ["已取消", "cancelled"] };
     const [label, type] = labels[state.state] || ["等待执行", "processing"];
     if (state.manual_status) return { label: statusOptions[`manual_${state.manual_status}`], type: `manual_${state.manual_status}`,
       detail: `主机人工标记；自动核验结果：${label}。${state.detail || ""}。不改写自动核验日志；人工成功持续保留并排除重登。` };
@@ -451,10 +467,11 @@ function updateSummary() {
   $("#row-summary").textContent = `共 ${rows.length} 行 · 已填写 ${rows.filter(filled).length} 条${selectedStatus ? ` · 筛选显示 ${displayedRows.length} 行` : ""}`;
   const count = type => rows.filter(row => status(row).type === type).length;
   const manualCount = rows.filter(row => status(row).type.startsWith("manual_")).length;
-  $("#ready-summary").textContent = `待登记 ${count("ready")} · 进行中 ${count("processing")} · 成功 ${count("success")} · 失败 ${count("failed")}${manualCount ? ` · 人工标记 ${manualCount}` : ""}`;
+  $("#ready-summary").textContent = `待登记 ${count("ready")} · 进行中 ${count("processing")} · 成功 ${count("success")} · 失败 ${count("failed")} · 待人工核查 ${count("pending_review")}${manualCount ? ` · 人工标记 ${manualCount}` : ""}`;
   $("#metric-ready").textContent = count("ready");
   $("#metric-success").textContent = count("success");
   $("#metric-failed").textContent = count("failed");
+  $("#metric-pending-review").textContent = count("pending_review");
 }
 function updateDuplicateOrders() {
   const orders = new Map();
@@ -542,8 +559,8 @@ document.addEventListener("keydown", event => {
 });
 function closeGiftPicker() { pickerRowId = null; pickerGiftUsage = null; $("#gift-picker").hidden = true; document.querySelectorAll('.gift-trigger[aria-expanded="true"]').forEach(button => button.setAttribute("aria-expanded", "false")); }
 function recentGiftUsage() {
-  const known = new Set(giftCatalog.map(gift => gift.id)), orders = new Map();
-  // 新行追加在表格末尾；按末尾往前选最近的不同订单，而不是按订单号大小排序。
+  const known = new Set(scopedGifts().map(gift => gift.id)), orders = new Map();
+  // 先限定分组，再从表格末尾选最近的不同订单；组外订单不占统计名额。
   for (let index = rows.length - 1; index >= 0; index--) {
     const row = rows[index], orderNo = row.order_no.trim();
     if (!orderNo) continue;
@@ -620,12 +637,13 @@ function renderGiftOptions() {
   if (!row) return closeGiftPicker();
   const query = $("#gift-search").value.trim();
   const usage = pickerGiftUsage || recentGiftUsage();
-  const candidates = scopedGifts().map((gift, index) => ({ gift, index, count: usage.counts.get(gift.id) || 0, score: query ? giftScore(query, gift) : 1 }))
+  const candidates = scopedGifts().map((gift, index) => ({ gift, index, count: usage.counts.get(gift.id) || 0, score: query ? giftSearchScore(query, gift) : 1 }))
     .filter(item => item.score >= .45 && inGiftGroup(item.gift.id, selectedGiftGroup)).sort((a, b) => b.score - a.score || b.count - a.count || a.index - b.index);
+  const scopeName = selectedGiftGroup === "__ungrouped" ? "未分组" : giftGroups.groups.find(group => group.id === selectedGiftGroup)?.name || "全部礼品";
   $("#gift-sort-hint").textContent = usage.orderCount
-    ? `${query ? "匹配优先 · " : ""}按近 ${usage.orderCount} 个订单的礼赠频率排序`
-    : "暂无订单使用记录，按清单顺序显示";
-  $("#gift-sort-hint").title = `统计当前表格末尾最近 ${recentGiftOrderLimit} 个有礼赠的不同订单；同一订单同一礼赠只计一次，同频保留原清单顺序。`;
+    ? `${query ? "匹配优先 · " : ""}${scopeName} · 按近 ${usage.orderCount} 个相关订单的礼赠频率排序`
+    : `${scopeName} · 暂无订单使用记录，按清单顺序显示`;
+  $("#gift-sort-hint").title = `仅统计当前分组的礼品，从当前表格末尾取最近 ${recentGiftOrderLimit} 个包含本组礼品的不同订单；同一订单同一礼赠只计一次，同频保留原清单顺序。`;
   const list = $("#gift-options"); list.replaceChildren();
   for (const id of row.gift_ids.filter(id => !candidates.some(item => item.gift.id === id))) {
     const item = document.createElement("div"), remove = document.createElement("button");
@@ -649,7 +667,7 @@ function renderGiftOptions() {
     const meta = document.createElement("span"); meta.className = "gift-option-meta"; meta.append(code);
     if (count) {
       const frequency = document.createElement("em"); frequency.className = "gift-frequency";
-      frequency.textContent = `${count} 单`; frequency.title = `最近 ${usage.orderCount} 个订单中，有 ${count} 单选择此礼赠`;
+      frequency.textContent = `${count} 单`; frequency.title = `${scopeName}最近 ${usage.orderCount} 个相关订单中，有 ${count} 单选择此礼赠`;
       meta.append(frequency);
     }
     label.append(check, text, meta); list.append(label);
@@ -1695,6 +1713,7 @@ async function updateGroups(update) {
 for (const id of ["#toolbar-gift-group", "#gift-group-filter"]) $(id).addEventListener("change", event => {
   if (event.target.value === "__invalid") return;
   selectedGiftGroup = event.target.value; scopeInvalid = false; persistScope(); giftMatcher = null;
+  pickerGiftUsage = pickerRowId ? recentGiftUsage() : null;
   renderGroupFilter(); if (pickerRowId) renderGiftOptions();
 });
 $("#manage-groups").addEventListener("click", openGroupManager);
@@ -1743,16 +1762,17 @@ async function refreshRetryList() {
   retryLoading = true;
   try {
     const result = await api("/api/registrations/failures");
-    retryFailureIds = result.failures.filter(failure => failure.eligible).map(failure => failure.failure_id);
-    $("#retry-summary").textContent = `当前失败 ${result.failures.length} 单 · 可核查重登 ${retryFailureIds.length} 单 · 需人工处理 ${result.failures.length - retryFailureIds.length} 单`;
+    retryFailureIds = result.failures.filter(failure => failure.eligible && failure.submitted_to_banniu !== true).map(failure => failure.failure_id);
+    const pendingCount = result.failures.filter(failure => failure.submitted_to_banniu === true).length;
+    $("#retry-summary").textContent = `失败 ${result.failures.length - pendingCount} 单 · 待人工核查 ${pendingCount} 单 · 可核查重登 ${retryFailureIds.length} 单 · 需人工处理 ${result.failures.length - retryFailureIds.length} 单`;
     $("#retry-all").disabled = result.busy || !retryFailureIds.length;
     const list = $("#retry-list"); list.replaceChildren();
-    $("#retry-message").textContent = result.busy ? "登记任务执行中；可继续为其他失败订单排队，逐单核查。" : result.failures.length ? "选择一条失败记录，核查后重新登记。" : "没有需要处理的失败订单。";
+    $("#retry-message").textContent = result.busy ? "登记任务执行中；可继续为其他失败订单排队，逐单核查。" : result.failures.length ? "仅可重登的失败记录可发起核查；待人工核查记录保留原处理限制。" : "没有需要处理的失败或待人工核查订单。";
     for (const failure of result.failures) {
       const card = document.createElement("section"); card.className = `retry-card ${failure.eligible ? "retry-eligible" : "retry-blocked"}`;
       const title = document.createElement("strong"); title.textContent = failure.order_no;
       const gift = document.createElement("p"); gift.textContent = `${failure.gift} · 编码：${failure.gift_ids.join("、")}`;
-      const detail = document.createElement("p"); detail.textContent = `失败原因：${failure.detail}`;
+      const detail = document.createElement("p"); detail.textContent = `${failure.submitted_to_banniu === true ? "待人工核查" : "失败原因"}：${failure.detail}`;
       const note = document.createElement("p"); note.className = "retry-note";
       note.textContent = failure.blocked_reason || "可发起重登核查；不会清除防重记录。";
       const button = document.createElement("button"); button.className = "button primary";
@@ -1760,7 +1780,8 @@ async function refreshRetryList() {
       button.disabled = !failure.eligible || retrySubmitting;
       button.addEventListener("click", () => submitFailureRetry(failure.failure_id));
       const heading = document.createElement("div"); heading.className = "retry-card-heading";
-      heading.append(title, button); card.append(heading, gift, detail, note); list.append(card);
+      heading.append(title); if (failure.submitted_to_banniu !== true) heading.append(button);
+      card.append(heading, gift, detail, note); list.append(card);
     }
   } catch (error) { $("#retry-message").textContent = error.message; }
   finally {

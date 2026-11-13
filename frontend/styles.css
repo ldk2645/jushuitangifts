@@ -193,6 +193,9 @@ body.sheet-expanded{overflow:hidden;background:#f1f6f3}
 #group-targets { border:1px solid #dce6e0; border-radius:8px; margin:12px 0; display:flex; flex-wrap:wrap; gap:14px; }
 #group-targets label { display:flex; gap:5px; align-items:center; }
 .maintenance-summary { font-size:12px; color:#648475; overflow-wrap:anywhere; margin:8px 0; }
+.status-badge.pending_review { color: #916513; background: #fff5dc; font-weight: 600; }
+.status-badge.pending_review:before { background: #c49435; }
+.overview-metrics .metric-pending-review strong { color: #916513; }
 :is(.status-badge.manual_success, .status-badge.manual_failed, .status-badge.manual_pending) { color: #704e12; background: #fff1d4; border: 1px dashed #aa802d; }
 #manual-status { padding: 8px; margin: 12px; max-width: 100%; }
 #retry-batch-result { white-space: normal; overflow-wrap: anywhere; }

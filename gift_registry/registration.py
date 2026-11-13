@@ -28,6 +28,16 @@ ACTIVE = {"queued", "querying", "submitting", "verifying", "verification_pending
 REVIEW_DELAY_SECONDS = 180
 
 
+def submitted_to_banniu(item):
+    """只供展示分流：尝试登记可能尚在填表，须有实际提交依据。"""
+    evidence = item.get("evidence") or {}
+    return (evidence.get("submit_clicked") is True
+            or item.get("submission_status") == "submitted"
+            or (evidence.get("receipt") or {}).get("accepted") is True
+            or (item.get("source") == "manual" and item.get("submit_attempted") is True)
+            or any(event.get("state") == "verifying" for event in item.get("events", [])))
+
+
 class RegistrationStartError(ValueError):
     """环境尚不能接收新任务；此次请求没有开始业务执行。"""
 
@@ -473,6 +483,7 @@ class RegistrationQueue(RetryBatches, JobStorage):
                                          'execution_id': item.get('execution_id'), 'state_version': item.get('state_version', 0),
                                          'submission_status': item.get('submission_status'),
                                          "task_key": task_key(row),
+                                         "submitted_to_banniu": submitted_to_banniu(item),
                                          "detail": item["detail"], "attempts": item["attempts"], "updated_at": item["updated_at"],
                                          "review_due_at": self._review_due_at(item), "review_result": item.get("review_result"),
                                          "retry_cancelled": item["state"] == "cancelled" and bool(item.get("retry_of"))}
@@ -591,6 +602,7 @@ class RegistrationQueue(RetryBatches, JobStorage):
                 candidates.append({"failure_id": record["failure_id"], "order_no": row["order_no"].strip(),
                                    "task_key": task_key(row), "gift_ids": sorted(set(row.get("gift_ids", []))),
                                    "gift": row["gift"], "detail": item["detail"], "completed_at": record["completed_at"],
+                                   "submitted_to_banniu": submitted_to_banniu(item),
                                    "eligible": not reason, "blocked_reason": reason})
             return {"failures": candidates, "busy": bool(self.pending.unfinished_tasks)}
 
