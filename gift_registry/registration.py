@@ -174,6 +174,7 @@ class RegistrationQueue(RetryBatches, JobStorage):
         self._snapshot_cache = {}
         self._storage_epochs = {}
         self._states_fingerprint, self._states_json = None, None
+        self._state_sources, self._index_stamps = {}, {}
         self._result_index, self._unknown_index, self._index_ready = {}, {}, False
         self._closed = False
         self._stopping = False
@@ -462,27 +463,72 @@ class RegistrationQueue(RetryBatches, JobStorage):
             return (datetime.fromisoformat(due) - timedelta(minutes=7)).isoformat()
         return due
 
-    def states(self):
-        result, latest = {}, {}
+    @staticmethod
+    def _display_entries(path, job):
+        entries = []
+        for row, item in zip(job['rows'], job['items']):
+            source = (path.name, job, row, item)
+            display = {'updated_at': item.get('display_updated_at', item.get('updated_at', job['created_at']))}
+            updated = (_item_updated_time(display, job), path.name)
+            ids = row.get('gift_ids')
+            complete = isinstance(ids, list) and bool(ids) and all(isinstance(v, str) and v for v in ids)
+            key = task_key(row)
+            identity = (key, item.get('execution_id') or (path.name, row['id']))
+            rank = (_verified_success(item), item.get('state_version', 0),
+                    not item.get('reused_result', False), _item_updated_time(item, job), path.name)
+            entries.append((source, updated, key, identity, rank, complete))
+        return entries
+
+    def states(self, identifiers=None):
+        result, owners, executions, tasks = {}, {}, {}, {}
         with self.lock:
             paths = self._paths()
-            fingerprint = tuple((p.name, p.stat().st_mtime_ns, p.stat().st_size,
-                                 self._storage_epochs.get(p.name, 0)) for p in paths)
-            if fingerprint == self._states_fingerprint and not any(self._overlay_dir(p).exists() for p in paths):
+            stamps = {p.name: self._job_stamp(p) for p in paths}
+            fingerprint = (tuple(stamps.items()), None if identifiers is None else tuple(sorted(identifiers)))
+            if fingerprint == self._states_fingerprint:
                 return json.loads(self._states_json)
+            self._state_sources = {name: cached for name, cached in self._state_sources.items() if name in stamps}
+            entries = []
             for path in paths:
-                job = self._load(path)
-                for row, item in zip(job["rows"], job["items"]):
-                    # 行归属只由明确创建／选回任务更新；后台复核不能抢占后来使用此行的订单。
-                    display = {"updated_at": item.get("display_updated_at", item.get("updated_at", job["created_at"]))}
-                    updated = (_item_updated_time(display, job), path.name)
-                    if row["id"] in latest and latest[row["id"]] > updated:
-                        continue
-                    latest[row["id"]] = updated
-                    result[row["id"]] = {"signature": row_signature(row), "state": item["state"], "task_id": job["id"],
+                cached = self._state_sources.get(path.name)
+                if cached is None or cached[0] != stamps[path.name]:
+                    job = self._load(path)
+                    cached = (stamps[path.name], job, self._display_entries(path, job))
+                    self._state_sources[path.name] = cached
+                entries.extend(cached[2])
+            # Bind visible rows first, then consult only exact, complete task identities.
+            for source, updated, key, identity, rank, complete in entries:
+                identifier = source[2]['id']
+                if identifiers is not None and identifier not in identifiers:
+                    continue
+                if identifier not in owners or owners[identifier][0] <= updated:
+                    owners[identifier] = (updated, source)
+            wanted = {task_key(source[2]) for _, source in owners.values()}
+            for source, updated, key, identity, rank, complete in entries:
+                if complete and key in wanted and (identity not in executions or rank > executions[identity][0]):
+                    executions[identity] = (rank, source)
+            for (key, _), (_, source) in executions.items():
+                tasks.setdefault(key, []).append(source)
+            for identifier, (_, owner) in owners.items():
+                _, _, row, owner_item = owner
+                key = task_key(row)
+                identity = (key, owner_item.get('execution_id') or (owner[0], row['id']))
+                source = executions.get(identity, (None, owner))[1]
+                item = source[3]
+                # Cancellation and an explicit retry keep their own queue ownership.
+                if owner_item['state'] == 'cancelled':
+                    source = owner
+                elif item['state'] in {'queued', 'waiting_for_workflow'}:
+                    progressed = [s for s in tasks.get(key, [])
+                                  if s[3]['state'] not in {'queued', 'waiting_for_workflow', 'cancelled', 'skipped'}
+                                  and (not owner_item.get('retry_of') or _verified_success(s[3]))]
+                    if progressed:
+                        source = max(progressed, key=lambda s: (_verified_success(s[3]), _item_updated_time(s[3], s[1]), s[0]))
+                _, job, _, item = source
+                result[identifier] = {"signature": row_signature(row), "state": item["state"], "task_id": job["id"],
                                          'execution_id': item.get('execution_id'), 'state_version': item.get('state_version', 0),
                                          'submission_status': item.get('submission_status'),
-                                         "task_key": task_key(row),
+                                         "task_key": key,
                                          "submitted_to_banniu": submitted_to_banniu(item),
                                          "detail": item["detail"], "attempts": item["attempts"], "updated_at": item["updated_at"],
                                          "review_due_at": self._review_due_at(item), "review_result": item.get("review_result"),
@@ -1038,7 +1084,7 @@ class RegistrationQueue(RetryBatches, JobStorage):
                     self.worker = threading.Thread(target=self._work, name="registration-worker", daemon=True)
                     self.worker.start()
             return {"task_id": job["id"], "count": len(records), "state": job["state"], "reused": reused,
-                    "workflow_configured": self.configured, "row_states": self.states()}
+                    "workflow_configured": self.configured, "row_states": self.states(set(identifiers))}
 
     def _work(self):
         while True:

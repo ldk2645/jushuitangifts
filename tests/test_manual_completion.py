@@ -257,7 +257,8 @@ class ManualCompletionTests(unittest.TestCase):
             queued_path.write_text(json.dumps(document), encoding="utf-8")
         operations.configured = True
         with RegistrationQueue(folder, operations=operations) as recovered:
-            self.assertEqual(recovered.states()[row["id"]]["state"], "waiting_for_workflow")
+            # An unclaimed recovered copy must display the existing verified result.
+            self.assertEqual(recovered.states()[row["id"]]["state"], "success")
             copied = recovered.start([{**row, "id": "copied-row"}], load_gifts())
             self.assertEqual(copied["state"], "success")
             original = recovered.start([row], load_gifts())

@@ -48,7 +48,7 @@ class HostManagement:
 
     def states(self):
         with self.rows.lock, self.jobs.lock:
-            states = self.jobs.states()
+            states = self.jobs.states({row['id'] for row in self.rows.document['rows']})
             marks = self._read()["marks"]
             tasks = self._task_marks(states)
             blocked = self._blocked_executions()

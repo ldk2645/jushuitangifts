@@ -217,12 +217,18 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
             try:
                 self.end_headers()
                 self.wfile.write(content)
-            except ConnectionError as exc:
+            except OSError as exc:
                 # The mutation may already be committed. A lost response is not
                 # a storage failure and must not produce a second 500/retry reply.
-                from .diagnostics import diagnose
-                diagnose(jobs.directory, 'http', 'response_disconnected', exc)
+                self.diagnose_http('response_write', exc)
                 self.close_connection = True
+
+        def diagnose_http(self, phase, exc):
+            from .diagnostics import diagnose
+            endpoint = request_path(self.path)
+            if endpoint.startswith('/api/registrations/batches/'):
+                endpoint = '/api/registrations/batches/:id'
+            diagnose(jobs.directory, 'http', phase + ':' + endpoint, exc)
 
         def allowed_host(self):
             values = self.headers.get_all('Host', [])
@@ -255,7 +261,8 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
         def do_GET(self):
             try:
                 self.read_request()
-            except (ValueError, OSError):
+            except (ValueError, OSError) as exc:
+                self.diagnose_http('read', exc)
                 self.send(503, {'error': '配置暂不可用，请主机检查目录维护事务或文件；现有任务历史保留'})
 
         def read_request(self):
@@ -450,7 +457,7 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
                                 raise RevisionConflict(str(exc)) from None
                         else:
                             result = management.delete(document.get("row_ids"), document.get("all", False))
-                        self.send(200, result)
+                    self.send(200, result)
                 elif retrying_all:
                     self.send(200, management.retry(document.get("failure_ids"), batch=True))
                 elif retrying:
@@ -462,7 +469,7 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
                             raise RevisionConflict("草稿已更新，请刷新页面后重新开始登记")
                         result = jobs.start(current["rows"], catalog_store.read())
                         result["row_states"] = management.states()
-                        self.send(200, result)
+                    self.send(200, result)
                 else:
                     self.send(200, row_store.write(document.get("revision"), document.get("rows")))
             except GiftCatalogConflict as exc:
@@ -477,8 +484,9 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
                 self.send(409, {"error": str(exc)})
             except (ValueError, UnicodeDecodeError) as exc:
                 self.send(400, {"error": str(exc)})
-            except OSError:
-                self.send(500, {"error": "写入存档失败，请保留页面并重试"})
+            except OSError as exc:
+                self.diagnose_http('mutation', exc)
+                self.send(500, {"error": "存档操作未完成或结果未确认，请保留页面并先查询状态"})
 
         do_PUT = mutate
         do_POST = mutate
