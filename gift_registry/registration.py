@@ -484,7 +484,8 @@ class RegistrationQueue(RetryBatches, JobStorage):
         with self.lock:
             paths = self._paths()
             stamps = {p.name: self._job_stamp(p) for p in paths}
-            fingerprint = (tuple(stamps.items()), None if identifiers is None else tuple(sorted(identifiers)))
+            fingerprint = (tuple(stamps.items()), None if identifiers is None else tuple(sorted(identifiers)),
+                           tuple(sorted(self.scheduled)), self.verification.active_order)
             if fingerprint == self._states_fingerprint:
                 return json.loads(self._states_json)
             self._state_sources = {name: cached for name, cached in self._state_sources.items() if name in stamps}
@@ -505,6 +506,13 @@ class RegistrationQueue(RetryBatches, JobStorage):
                     owners[identifier] = (updated, source)
             wanted = {task_key(source[2]) for _, source in owners.values()}
             for source, updated, key, identity, rank, complete in entries:
+                # A stale on-disk "submitting" marker is not a live execution.
+                # Its conservative reused failure must remain a manual-check result.
+                if (source[3]['state'] in {'querying', 'submitting', 'verifying'}
+                        and source[0] not in self.scheduled
+                        and not (source[3]['state'] == 'verifying'
+                                 and self.verification.active_order == source[2]['order_no'].strip())):
+                    continue
                 if complete and key in wanted and (identity not in executions or rank > executions[identity][0]):
                     executions[identity] = (rank, source)
             for (key, _), (_, source) in executions.items():

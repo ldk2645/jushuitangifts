@@ -180,7 +180,7 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
         with row_store.lock, jobs.lock:
             document = row_store.read()
             identifiers = {row['id'] for row in document['rows']}
-            states = management.states() if identifiers else {}
+            states = management.states(identifiers) if identifiers else {}
             return {**document, 'row_states': {key: value for key, value in states.items() if key in identifiers}}
 
 
@@ -468,7 +468,7 @@ def make_server(port=8765, *, store=None, queue=None, catalog=None, network=None
                         if type(document.get("revision")) is not int or document["revision"] != current["revision"]:
                             raise RevisionConflict("草稿已更新，请刷新页面后重新开始登记")
                         result = jobs.start(current["rows"], catalog_store.read())
-                        result["row_states"] = management.states()
+                        result["row_states"] = management.states({row['id'] for row in current['rows']})
                     self.send(200, result)
                 else:
                     self.send(200, row_store.write(document.get("revision"), document.get("rows")))
